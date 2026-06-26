@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from './supabaseClient'
 
 const THEMES = {
@@ -19,6 +19,8 @@ const THEMES = {
 
 export default function MenuPage() {
   const { slug } = useParams()
+  const [searchParams] = useSearchParams()
+  const branchId = searchParams.get('branch')
   const [business, setBusiness] = useState(null)
   const [categories, setCategories] = useState([])
   const [activeCat, setActiveCat] = useState(null)
@@ -33,9 +35,11 @@ export default function MenuPage() {
       if (!biz) { setNotFound(true); setLoading(false); return }
       setBusiness(biz)
 
-      const { data: cats } = await supabase
+      let catQuery = supabase
         .from('categories').select('*, products(*)')
-        .eq('business_id', biz.id).is('branch_id', null).order('sort_order')
+        .eq('business_id', biz.id)
+      catQuery = branchId ? catQuery.eq('branch_id', branchId) : catQuery.is('branch_id', null)
+      const { data: cats } = await catQuery.order('sort_order')
 
       const visible = (cats || []).map(c => ({ ...c, products: (c.products || []).filter(p => p.is_active) }))
       setCategories(visible)
@@ -43,7 +47,7 @@ export default function MenuPage() {
       setLoading(false)
     }
     load()
-  }, [slug])
+  }, [slug, branchId])
 
   const theme = THEMES[business?.menu_theme] || THEMES.dark_glass
 
