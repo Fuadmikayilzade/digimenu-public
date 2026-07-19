@@ -18,230 +18,258 @@ const STATUS_INFO = {
 }
 
 function getCustomerToken() {
-  let token = sessionStorage.getItem('customer_token')
-  if (!token) { token = crypto.randomUUID(); sessionStorage.setItem('customer_token', token) }
-  return token
+  let t = sessionStorage.getItem('dg_ct')
+  if (!t) { t = Math.random().toString(36).slice(2) + Date.now(); sessionStorage.setItem('dg_ct', t) }
+  return t
 }
 
 export default function MenuPage() {
   const { slug } = useParams()
-  const [searchParams] = useSearchParams()
-  const branchId = searchParams.get('branch')
-  const tableParam = searchParams.get('table')
+  const [sp] = useSearchParams()
+  const branchId = sp.get('branch')
+  const urlTable = sp.get('table')
 
-  const [business, setBusiness] = useState(null)
-  const [bSettings, setBSettings] = useState(null)
-  const [categories, setCategories] = useState([])
+  const [biz, setBiz] = useState(null)
+  const [cats, setCats] = useState([])
   const [activeCat, setActiveCat] = useState(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
-  const [tableId, setTableId] = useState(null)
-  const [sessionToken, setSessionToken] = useState(null)
-  const [tableNumber, setTableNumber] = useState(tableParam || '')
-  const [tableSetupDone, setTableSetupDone] = useState(!!tableParam)
-  const [tableSetupLoading, setTableSetupLoading] = useState(false)
 
+  // Masa
+  const [tableNum, setTableNum] = useState(urlTable || '')
+  const [tableId, setTableId] = useState(null)
+  const [sessionTok, setSessionTok] = useState(null)
+  const [tableReady, setTableReady] = useState(false)
+  const [tableErr, setTableErr] = useState('')
+  const [tableLoading, setTableLoading] = useState(false)
+
+  // Sifariş
   const [step, setStep] = useState('menu')
   const [cart, setCart] = useState([])
-  const [customer, setCustomer] = useState({ name: '', phone: '' })
-  const [note, setNote] = useState('')
-  const [loyaltyInfo, setLoyaltyInfo] = useState(null)
+  const [name, setName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [noteText, setNoteText] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState('')
+  const [orderErr, setOrderErr] = useState('')
   const [myOrders, setMyOrders] = useState([])
-  const customerToken = getCustomerToken()
 
-  useEffect(() => { loadMenu() }, [slug])
+  const cTok = getCustomerToken()
 
-  // tableParam URL-də varsa avtomatik setup et
-  useEffect(() => {
-    if (tableParam && business?.id) setupTable(tableParam)
-  }, [tableParam, business])
+  useEffect(() => { init() }, [slug])
 
-  // Realtime status yenilənməsi
-  useEffect(() => {
-    if (!business?.id) return
-    const channel = supabase
-      .channel(`orders:${customerToken}`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pending_orders',
-        filter: `customer_token=eq.${customerToken}` },
-        (payload) => setMyOrders(prev => prev.map(o => o.id === payload.new.id ? payload.new : o))
-      ).subscribe()
-    return () => supabase.removeChannel(channel)
-  }, [business])
+  const init = async () => {
+    // 1. Biznes yüklə
+    const { data: b } = await supabase
+      .from('businesses').select('*').eq('slug', slug).maybeSingle()
+    if (!b) { setNotFound(true); setLoading(false); return }
+    setBiz(b)
 
-  const loadMenu = async () => {
-    const { data: biz } = await supabase
-      .from('businesses').select('*').eq('slug', slug).eq('is_published', true).maybeSingle()
-    if (!biz) { setNotFound(true); setLoading(false); return }
-    setBusiness(biz)
-
-    const [{ data: s }, { data: cats }, { data: orders }] = await Promise.all([
-      supabase.from('business_settings').select('*').eq('business_id', biz.id).maybeSingle(),
-      (branchId
-        ? supabase.from('categories').select('*, products(*)').eq('business_id', biz.id).eq('branch_id', branchId).order('sort_order')
-        : supabase.from('categories').select('*, products(*)').eq('business_id', biz.id).is('branch_id', null).order('sort_order')
-      ),
-      supabase.from('pending_orders').select('*').eq('business_id', biz.id).eq('customer_token', customerToken).order('created_at', { ascending: false }),
-    ])
-
-    setBSettings(s)
-    const visible = (cats || []).map(c => ({ ...c, products: (c.products || []).filter(p => p.is_active) }))
-    setCategories(visible)
+    // 2. Kateqoriyalar
+    let q = supabase.from('categories').select('*, products(*)')
+      .eq('business_id', b.id).order('sort_order')
+    if (branchId) q = q.eq('branch_id', branchId)
+    else q = q.is('branch_id', null)
+    const { data: cData } = await q
+    const visible = (cData || []).map(c => ({
+      ...c, products: (c.products || []).filter(p => p.is_active && p.price > 0)
+    })).filter(c => c.products.length > 0)
+    setCats(visible)
     if (visible.length) setActiveCat(visible[0].id)
-    setMyOrders(orders || [])
+
+    // 3. Köhnə sifarişlər
+    const { data: prev } = await supabase.from('pending_orders')
+      .select('*').eq('business_id', b.id).eq('customer_token', cTok)
+      .order('created_at', { ascending: false })
+    setMyOrders(prev || [])
+
+    // 4. URL-də masa varsa avtomatik qur
+    if (urlTable) await setupTable(urlTable, b)
+
     setLoading(false)
   }
 
-  const setupTable = async (num) => {
-    if (!business?.id || !num) return
-    setTableSetupLoading(true)
-    let tq = supabase.from('tables').select('id').eq('business_id', business.id).eq('number', String(num))
-    tq = branchId ? tq.eq('branch_id', branchId) : tq.is('branch_id', null)
-    const { data: tData } = await tq.limit(1)
+  // Realtime status
+  useEffect(() => {
+    if (!biz?.id) return
+    const ch = supabase.channel(`st_${cTok}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pending_orders',
+        filter: `customer_token=eq.${cTok}` },
+        p => setMyOrders(prev => prev.map(o => o.id === p.new.id ? p.new : o))
+      ).subscribe()
+    return () => supabase.removeChannel(ch)
+  }, [biz])
 
-    if (!tData?.[0]) {
-      setError(`Masa ${num} tapılmadı. Düzgün masa nömrəsini daxil edin.`)
-      setTableSetupLoading(false)
-      return
+  const setupTable = async (num, bizObj) => {
+    const b = bizObj || biz
+    if (!b?.id || !num) {
+      setTableErr('Sistem xətası. Səhifəni yeniləyin.')
+      return false
+    }
+    setTableLoading(true); setTableErr('')
+
+    // Biznesin bütün masalarını yüklə, sonra nömrəyə görə tap
+    const { data: allTables } = await supabase
+      .from('tables')
+      .select('id, number, branch_id')
+      .eq('business_id', b.id)
+
+    if (!allTables || allTables.length === 0) {
+      setTableErr('Bu biznesin masaları tapılmadı.')
+      setTableLoading(false)
+      return false
     }
 
-    setTableId(tData[0].id)
+    // Nömrəni müxtəlif formatlarda yoxla
+    const n = String(num).trim()
+    const variants = [n, n.padStart(2, '0'), String(parseInt(n) || 0)]
 
-    const { data: sess } = await supabase
-      .from('table_sessions').select('session_token')
-      .eq('table_id', tData[0].id).eq('is_active', true)
+    let found = null
+    for (const v of variants) {
+      found = allTables.find(t => t.number === v)
+      if (found) break
+    }
+
+    // Tapılmadısa bütün masaları göstər
+    if (!found) {
+      const nums = allTables.map(t => t.number).join(', ')
+      setTableErr(`Masa "${num}" tapılmadı. Mövcud masalar: ${nums}`)
+      setTableLoading(false)
+      return false
+    }
+
+    const tId = found.id
+
+    setTableId(tId)
+
+    // Sessiya yarat/tap
+    const { data: sess } = await supabase.from('table_sessions')
+      .select('session_token').eq('table_id', tId).eq('is_active', true)
       .gt('expires_at', new Date().toISOString()).limit(1)
 
     if (sess?.[0]) {
-      setSessionToken(sess[0].session_token)
+      setSessionTok(sess[0].session_token)
     } else {
-      const { data: ns } = await supabase
-        .from('table_sessions')
-        .insert({ business_id: business.id, table_id: tData[0].id })
-        .select('session_token').single()
-      if (ns) setSessionToken(ns.session_token)
+      const { data: ns } = await supabase.from('table_sessions')
+        .insert({ business_id: b.id, table_id: tId }).select('session_token').single()
+      if (ns) setSessionTok(ns.session_token)
     }
 
-    setTableSetupDone(true)
-    setError('')
-    setTableSetupLoading(false)
+    setTableReady(true)
+    setTableLoading(false)
+    return true
   }
 
-  const addToCart = (product) => setCart(prev => {
-    const ex = prev.find(i => i.id === product.id)
-    return ex ? prev.map(i => i.id === product.id ? { ...i, qty: i.qty + 1 } : i)
-              : [...prev, { ...product, qty: 1 }]
+  const handleTableConfirm = async () => {
+    if (!tableNum.trim()) return
+    await setupTable(tableNum.trim())
+  }
+
+  const addToCart = p => setCart(prev => {
+    const ex = prev.find(i => i.id === p.id)
+    return ex ? prev.map(i => i.id === p.id ? { ...i, qty: i.qty + 1 } : i)
+              : [...prev, { ...p, qty: 1 }]
   })
 
-  const removeFromCart = (id) => setCart(prev => {
+  const removeFromCart = id => setCart(prev => {
     const ex = prev.find(i => i.id === id)
     if (!ex) return prev
-    return ex.qty === 1 ? prev.filter(i => i.id !== id) : prev.map(i => i.id === id ? { ...i, qty: i.qty - 1 } : i)
+    return ex.qty === 1 ? prev.filter(i => i.id !== id)
+                        : prev.map(i => i.id === id ? { ...i, qty: i.qty - 1 } : i)
   })
 
   const cartTotal = cart.reduce((s, i) => s + i.price * i.qty, 0)
-
-  const checkLoyalty = async (phone) => {
-    if (!business?.id || phone.length < 6) return
-    const { data } = await supabase.from('loyalty_members')
-      .select('*').eq('business_id', business.id).eq('phone', phone).maybeSingle()
-    setLoyaltyInfo(data || null)
-  }
+  const cartCount = cart.reduce((s, i) => s + i.qty, 0)
 
   const submitOrder = async () => {
-    if (!customer.name.trim()) { setError('Adınızı yazın'); return }
-    if (!customer.phone.trim()) { setError('Telefon nömrənizi yazın'); return }
-    if (!cart.length) { setError('Səbət boşdur'); return }
-    if (!sessionToken || !tableId) { setError('Masa tapılmadı. Geri qayıdıb masa nömrənizi daxil edin.'); return }
-    setSubmitting(true); setError('')
+    if (!name.trim()) { setOrderErr('Adınızı yazın'); return }
+    if (!phone.trim()) { setOrderErr('Telefon nömrənizi yazın'); return }
+    if (!cart.length) { setOrderErr('Səbət boşdur'); return }
+    if (!tableId || !sessionTok) { setOrderErr('Masa seçilməyib.'); return }
+    setSubmitting(true); setOrderErr('')
 
-    const { data: allowed } = await supabase.rpc('check_order_rate_limit', { p_session_token: sessionToken })
-    if (!allowed) { setError('Çox tez-tez sifariş verdiniz. Bir az gözləyin.'); setSubmitting(false); return }
+    // Rate limit
+    const { data: ok } = await supabase.rpc('check_order_rate_limit', { p_session_token: sessionTok })
+    if (ok === false) { setOrderErr('Çox tez-tez sifariş verdiniz. Bir az gözləyin.'); setSubmitting(false); return }
 
     const { data: newOrder, error: insErr } = await supabase.from('pending_orders').insert({
-      business_id: business.id, branch_id: branchId || null,
-      table_id: tableId, session_token: sessionToken,
-      customer_token: customerToken,
-      customer_name: customer.name.trim(),
-      customer_phone: customer.phone.trim(),
+      business_id: biz.id,
+      branch_id: branchId || null,
+      table_id: tableId,
+      session_token: sessionTok,
+      customer_token: cTok,
+      customer_name: name.trim(),
+      customer_phone: phone.trim(),
       items: cart.map(i => ({ id: i.id, name: i.name, price: i.price, qty: i.qty })),
-      total: cartTotal, note: note.trim() || null, order_status: 'pending',
+      total: cartTotal,
+      note: noteText.trim() || null,
+      order_status: 'pending',
+      status: 'pending',
     }).select().single()
 
-    if (insErr) { setError(insErr.message); setSubmitting(false); return }
+    if (insErr) { setOrderErr(insErr.message); setSubmitting(false); return }
 
-    await supabase.from('table_sessions').update({ last_order_at: new Date().toISOString() }).eq('session_token', sessionToken)
+    await supabase.from('table_sessions')
+      .update({ last_order_at: new Date().toISOString() })
+      .eq('session_token', sessionTok)
 
-    if (loyaltyInfo?.id) {
-      await supabase.from('loyalty_history').insert({
-        member_id: loyaltyInfo.id, business_id: business.id,
-        visit_date: new Date().toISOString().slice(0, 10), order_total: cartTotal,
-      })
-    }
-
-    setMyOrders(prev => [newOrder, ...prev])
+    setMyOrders(p => [newOrder, ...p])
     setCart([])
     setSubmitting(false)
     setStep('tracking')
   }
 
-  const theme = THEMES[business?.menu_theme] || THEMES.dark_glass
-  const orderingEnabled = bSettings?.customer_ordering_enabled !== false
-  const activeStages = bSettings?.status_stages || ['accepted', 'preparing', 'ready', 'delivered']
+  const theme = THEMES[biz?.menu_theme] || THEMES.dark_glass
+  const T = (s) => ({ ...s })
 
-  if (loading) return <Ctr bg={THEMES.dark_glass.bg}>Yüklənir...</Ctr>
-  if (notFound) return <Ctr bg={THEMES.dark_glass.bg}>Menyu tapılmadı.</Ctr>
+  if (loading) return <Ctr bg="#0B1020">Yüklənir...</Ctr>
+  if (notFound) return <Ctr bg="#0B1020">Menyu tapılmadı.</Ctr>
 
-  // Sifariş izləmə
+  // ── SİFARİŞ İZLƏMƏ ──────────────────────────────────────────────
   if (step === 'tracking') return (
     <div style={{ minHeight: '100vh', background: theme.bg, fontFamily: 'system-ui,sans-serif', padding: '40px 20px' }}>
       <div style={{ maxWidth: 480, margin: '0 auto' }}>
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <div style={{ fontSize: 48 }}>🧾</div>
-          <div style={{ color: theme.text, fontSize: 20, fontWeight: 800, marginTop: 10 }}>Sifarişlərim</div>
-          <div style={{ color: theme.sub, fontSize: 13, marginTop: 4 }}>
-            {tableSetupDone ? `Masa ${tableNumber}` : 'Mənim sifarişlərim'} · Real vaxtda yenilənir
-          </div>
+          <div style={{ fontSize: 52 }}>🧾</div>
+          <div style={{ color: theme.text, fontSize: 20, fontWeight: 800, marginTop: 12 }}>Sifarişlərim</div>
+          <div style={{ color: theme.sub, fontSize: 13, marginTop: 4 }}>Masa {tableNum} · Real vaxtda yenilənir</div>
         </div>
 
-        {myOrders.length === 0 ? (
-          <div style={{ color: theme.sub, textAlign: 'center' }}>Sifariş tapılmadı.</div>
-        ) : myOrders.map(order => {
-          const st = STATUS_INFO[order.order_status] || STATUS_INFO.pending
-          const stageIdx = activeStages.indexOf(order.order_status)
+        {myOrders.length === 0 && <div style={{ color: theme.sub, textAlign: 'center' }}>Sifariş tapılmadı.</div>}
+
+        {myOrders.map(ord => {
+          const st = STATUS_INFO[ord.order_status] || STATUS_INFO.pending
+          const stages = ['accepted','preparing','ready','delivered']
+          const idx = stages.indexOf(ord.order_status)
           return (
-            <div key={order.id} style={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 16, padding: 18, marginBottom: 14 }}>
+            <div key={ord.id} style={{ background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 16, padding: 18, marginBottom: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                <div style={{ color: theme.text, fontWeight: 700 }}>#{order.id.slice(0, 6)}</div>
+                <div style={{ color: theme.sub, fontSize: 12 }}>#{ord.id.slice(0,6)}</div>
                 <div style={{ padding: '5px 12px', borderRadius: 999, background: st.color + '22', color: st.color, fontWeight: 700, fontSize: 13 }}>
                   {st.icon} {st.label}
                 </div>
               </div>
-
-              {order.order_status !== 'rejected' && order.order_status !== 'pending' && (
+              {idx >= 0 && (
                 <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
-                  {activeStages.map((s, i) => {
+                  {stages.map((s, i) => {
                     const si = STATUS_INFO[s]
-                    const done = stageIdx >= i
+                    const done = idx >= i
                     return (
                       <div key={s} style={{ flex: 1 }}>
                         <div style={{ height: 4, borderRadius: 2, background: done ? si.color : theme.border }} />
-                        <div style={{ textAlign: 'center', fontSize: 9, marginTop: 3, color: done ? si.color : theme.sub }}>{si.icon}</div>
+                        <div style={{ textAlign: 'center', fontSize: 10, marginTop: 3, color: done ? si.color : theme.sub }}>{si.icon}</div>
                       </div>
                     )
                   })}
                 </div>
               )}
-
-              {(order.items || []).map((item, i) => (
+              {(ord.items || []).map((it, i) => (
                 <div key={i} style={{ display: 'flex', justifyContent: 'space-between', color: theme.sub, fontSize: 13, marginBottom: 3 }}>
-                  <span>{item.name} × {item.qty}</span>
-                  <span>₼{(item.price * item.qty).toFixed(2)}</span>
+                  <span>{it.name} × {it.qty}</span>
+                  <span>₼{(it.price * it.qty).toFixed(2)}</span>
                 </div>
               ))}
               <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 8, marginTop: 8, display: 'flex', justifyContent: 'space-between', color: theme.accent, fontWeight: 800 }}>
-                <span>Cəmi</span><span>₼{Number(order.total).toFixed(2)}</span>
+                <span>Cəmi</span><span>₼{Number(ord.total).toFixed(2)}</span>
               </div>
             </div>
           )
@@ -255,40 +283,49 @@ export default function MenuPage() {
     </div>
   )
 
-  const activeCategory = categories.find(c => c.id === activeCat)
+  const activeCatData = cats.find(c => c.id === activeCat)
 
+  // ── ƏSAS MENYU ───────────────────────────────────────────────────
   return (
-    <div style={{ minHeight: '100vh', background: theme.bg, fontFamily: 'system-ui,sans-serif', paddingBottom: tableSetupDone && cart.length > 0 ? 90 : 20 }}>
+    <div style={{ minHeight: '100vh', background: theme.bg, fontFamily: 'system-ui,sans-serif', paddingBottom: tableReady && cart.length ? 90 : 20 }}>
+
       {/* Hero */}
-      <div style={{ background: theme.heroGrad, padding: '36px 20px 28px', color: '#fff' }}>
-        {business.logo_url && <img src={business.logo_url} alt="logo" style={{ width: 56, height: 56, borderRadius: 14, objectFit: 'cover', marginBottom: 12, border: '2px solid rgba(255,255,255,0.3)' }} />}
-        <div style={{ fontSize: 24, fontWeight: 800 }}>{business.name}</div>
-        <div style={{ fontSize: 13, opacity: 0.75, marginTop: 4 }}>Rəqəmsal menyu</div>
-        {tableSetupDone && tableNumber && (
-          <div style={{ marginTop: 8, display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: 999, padding: '4px 12px', fontSize: 12, fontWeight: 700 }}>
-            🪑 Masa {tableNumber}
-          </div>
-        )}
+      <div style={{ background: theme.heroGrad, padding: '36px 20px 28px' }}>
+        {biz.logo_url && <img src={biz.logo_url} alt="" style={{ width: 56, height: 56, borderRadius: 14, objectFit: 'cover', marginBottom: 12, border: '2px solid rgba(255,255,255,0.3)' }} />}
+        <div style={{ color: '#fff', fontSize: 24, fontWeight: 800 }}>{biz.name}</div>
+        <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13, marginTop: 4 }}>Rəqəmsal menyu</div>
+        {tableReady && <div style={{ marginTop: 8, display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: 999, padding: '4px 12px', fontSize: 12, fontWeight: 700, color: '#fff' }}>🪑 Masa {tableNum}</div>}
       </div>
 
-      {/* Masa seçimi (URL-də table yoxdursa) */}
-      {orderingEnabled && !tableSetupDone && (
-        <div style={{ margin: '16px 20px 0', background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 14, padding: 16 }}>
-          <div style={{ color: theme.text, fontWeight: 700, fontSize: 14, marginBottom: 8 }}>🪑 Masa nömrənizi daxil edin</div>
-          <div style={{ color: theme.sub, fontSize: 12, marginBottom: 12 }}>Sifariş vermək üçün hansı masada oturduğunuzu göstərin.</div>
-          {error && <div style={{ color: '#FF5A5F', fontSize: 12, marginBottom: 8 }}>{error}</div>}
-          <div style={{ display: 'flex', gap: 8 }}>
+      {/* Masa seçimi (URL-də yoxdursa) */}
+      {!tableReady && (
+        <div style={{ margin: 20, background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 16, padding: 20 }}>
+          <div style={{ color: theme.text, fontWeight: 800, fontSize: 16, marginBottom: 6 }}>🪑 Masanızı seçin</div>
+          <div style={{ color: theme.sub, fontSize: 13, marginBottom: 16 }}>
+            Sifariş vermək üçün masa nömrənizi daxil edin.
+          </div>
+          {tableErr && (
+            <div style={{ color: '#FF5A5F', fontSize: 12, marginBottom: 10, padding: '8px 12px', background: 'rgba(255,90,95,.1)', borderRadius: 8 }}>
+              {tableErr}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 10 }}>
             <input
-              value={tableNumber}
-              onChange={e => setTableNumber(e.target.value)}
-              placeholder="Məs: 5"
+              value={tableNum}
+              onChange={e => setTableNum(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleTableConfirm()}
+              placeholder="Masa nömrəsi (məs: 3)"
               type="number"
-              style={{ flex: 1, padding: '10px 14px', borderRadius: 10, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, fontSize: 16, textAlign: 'center' }}
+              min="1"
+              style={{ flex: 1, padding: '14px 16px', borderRadius: 12, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, fontSize: 18, textAlign: 'center', fontWeight: 700 }}
             />
-            <button onClick={() => setupTable(tableNumber)} disabled={!tableNumber || tableSetupLoading}
-              style={{ padding: '10px 20px', borderRadius: 10, border: 'none', background: tableNumber ? theme.accent : theme.border, color: '#001018', fontWeight: 700, cursor: tableNumber ? 'pointer' : 'not-allowed', fontSize: 14 }}>
-              {tableSetupLoading ? '...' : 'Təsdiqlə'}
+            <button onClick={handleTableConfirm} disabled={!tableNum || tableLoading}
+              style={{ padding: '14px 22px', borderRadius: 12, border: 'none', background: tableNum ? theme.accent : theme.border, color: '#001018', fontWeight: 800, fontSize: 15, cursor: tableNum ? 'pointer' : 'default' }}>
+              {tableLoading ? '...' : '✓'}
             </button>
+          </div>
+          <div style={{ color: theme.sub, fontSize: 11, marginTop: 10, textAlign: 'center' }}>
+            Masa nömrəsini masa üzərindəki QR yanında tapa bilərsiniz.
           </div>
         </div>
       )}
@@ -297,7 +334,7 @@ export default function MenuPage() {
       {myOrders.length > 0 && (
         <div style={{ padding: '12px 20px 0' }}>
           <button onClick={() => setStep('tracking')}
-            style={{ width: '100%', padding: '10px 16px', borderRadius: 10, border: `1px solid ${theme.border}`, background: theme.card, color: theme.text, fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            style={{ width: '100%', padding: '12px 16px', borderRadius: 12, border: `1px solid ${theme.border}`, background: theme.card, color: theme.text, fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>📋 Sifarişlərim ({myOrders.length})</span>
             <span style={{ color: STATUS_INFO[myOrders[0]?.order_status]?.color || theme.sub }}>
               {STATUS_INFO[myOrders[0]?.order_status]?.icon} {STATUS_INFO[myOrders[0]?.order_status]?.label}
@@ -307,10 +344,10 @@ export default function MenuPage() {
       )}
 
       {/* Kateqoriyalar */}
-      <div style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: '16px 20px', WebkitOverflowScrolling: 'touch' }}>
-        {categories.map(c => (
+      <div style={{ display: 'flex', gap: 8, overflowX: 'auto', padding: '16px 20px', scrollbarWidth: 'none' }}>
+        {cats.map(c => (
           <button key={c.id} onClick={() => setActiveCat(c.id)}
-            style={{ flexShrink: 0, padding: '8px 16px', borderRadius: 999, fontSize: 13, fontWeight: 600, border: `1px solid ${theme.border}`, cursor: 'pointer', background: activeCat === c.id ? theme.accent : theme.card, color: activeCat === c.id ? '#001018' : theme.text }}>
+            style={{ flexShrink: 0, padding: '8px 18px', borderRadius: 999, fontSize: 13, fontWeight: 600, border: `1px solid ${theme.border}`, cursor: 'pointer', transition: '.15s', background: activeCat === c.id ? theme.accent : theme.card, color: activeCat === c.id ? '#001018' : theme.text }}>
             {c.name}
           </button>
         ))}
@@ -318,37 +355,28 @@ export default function MenuPage() {
 
       {/* Məhsullar */}
       <div style={{ padding: '0 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {!orderingEnabled && (
-          <div style={{ padding: '10px 14px', borderRadius: 10, background: theme.card, border: `1px solid ${theme.border}`, color: theme.sub, fontSize: 13, textAlign: 'center' }}>
-            ℹ️ Bu restoran hazırda online sifariş qəbul etmir.
-          </div>
-        )}
-        {(activeCategory?.products || []).length === 0 && (
-          <div style={{ color: theme.sub, textAlign: 'center', padding: 20 }}>Bu kateqoriyada məhsul yoxdur.</div>
-        )}
-        {(activeCategory?.products || []).map(p => {
+        {(activeCatData?.products || []).map(p => {
           const inCart = cart.find(i => i.id === p.id)
           return (
             <div key={p.id} style={{ display: 'flex', gap: 12, background: theme.card, border: `1px solid ${theme.border}`, borderRadius: 16, padding: 12, alignItems: 'center' }}>
               {p.image_url
-                ? <img src={p.image_url} alt={p.name} style={{ width: 60, height: 60, borderRadius: 12, objectFit: 'cover', flexShrink: 0 }} />
-                : <div style={{ width: 60, height: 60, borderRadius: 12, background: theme.border, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>🍽</div>
+                ? <img src={p.image_url} alt={p.name} style={{ width: 64, height: 64, borderRadius: 12, objectFit: 'cover', flexShrink: 0 }} />
+                : <div style={{ width: 64, height: 64, borderRadius: 12, background: theme.border, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26 }}>🍽</div>
               }
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ color: theme.text, fontWeight: 700, fontSize: 14 }}>{p.name}</div>
                 {p.description && <div style={{ color: theme.sub, fontSize: 12, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.description}</div>}
-                <div style={{ color: theme.accent, fontWeight: 800, fontSize: 15, marginTop: 4 }}>₼{p.price}</div>
+                <div style={{ color: theme.accent, fontWeight: 800, fontSize: 16, marginTop: 4 }}>₼{p.price}</div>
               </div>
-              {orderingEnabled && tableSetupDone && (
+              {tableReady && (
                 inCart ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <button onClick={() => removeFromCart(p.id)} style={{ width: 30, height: 30, borderRadius: 999, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, fontWeight: 800, fontSize: 18, cursor: 'pointer' }}>−</button>
-                    <span style={{ color: theme.text, fontWeight: 700, minWidth: 18, textAlign: 'center' }}>{inCart.qty}</span>
-                    <button onClick={() => addToCart(p)} style={{ width: 30, height: 30, borderRadius: 999, border: 'none', background: theme.accent, color: '#001018', fontWeight: 800, fontSize: 18, cursor: 'pointer' }}>+</button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+                    <button onClick={() => removeFromCart(p.id)} style={{ width: 32, height: 32, borderRadius: 999, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, fontWeight: 800, fontSize: 20, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>−</button>
+                    <span style={{ color: theme.text, fontWeight: 700, fontSize: 16, minWidth: 20, textAlign: 'center' }}>{inCart.qty}</span>
+                    <button onClick={() => addToCart(p)} style={{ width: 32, height: 32, borderRadius: 999, border: 'none', background: theme.accent, color: '#001018', fontWeight: 800, fontSize: 20, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>+</button>
                   </div>
                 ) : (
-                  <button onClick={() => addToCart(p)}
-                    style={{ padding: '7px 14px', borderRadius: 999, border: 'none', background: theme.accent, color: '#001018', fontWeight: 700, fontSize: 13, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  <button onClick={() => addToCart(p)} style={{ padding: '8px 16px', borderRadius: 999, border: 'none', background: theme.accent, color: '#001018', fontWeight: 700, fontSize: 13, cursor: 'pointer', flexShrink: 0 }}>
                     + Əlavə et
                   </button>
                 )
@@ -358,64 +386,60 @@ export default function MenuPage() {
         })}
       </div>
 
-      {/* Sabit aşağı səbət */}
-      {orderingEnabled && tableSetupDone && cart.length > 0 && step === 'menu' && (
-        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, padding: '12px 20px', background: theme.bg, borderTop: `1px solid ${theme.border}` }}>
+      {/* Aşağı səbət */}
+      {tableReady && cart.length > 0 && step === 'menu' && (
+        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, padding: '14px 20px', background: theme.bg, borderTop: `1px solid ${theme.border}` }}>
           <button onClick={() => setStep('register')}
-            style={{ width: '100%', padding: 14, borderRadius: 12, border: 'none', background: theme.accent, color: '#001018', fontWeight: 800, fontSize: 15, cursor: 'pointer' }}>
-            🛒 Sifarişi göndər — ₼{cartTotal.toFixed(2)} · {cart.reduce((s, i) => s + i.qty, 0)} məhsul
+            style={{ width: '100%', padding: 16, borderRadius: 14, border: 'none', background: theme.accent, color: '#001018', fontWeight: 800, fontSize: 16, cursor: 'pointer' }}>
+            🛒 Sifarişi göndər — ₼{cartTotal.toFixed(2)} · {cartCount} məhsul
           </button>
         </div>
       )}
 
-      {/* Müştəri forması */}
+      {/* Müştəri məlumat forması */}
       {step === 'register' && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-end', zIndex: 200 }}>
-          <div style={{ background: theme.card === 'rgba(255,255,255,0.06)' ? '#131B30' : theme.card, padding: 24, borderRadius: '20px 20px 0 0', width: '100%', boxSizing: 'border-box', maxHeight: '85vh', overflowY: 'auto' }}>
-            <div style={{ width: 36, height: 4, borderRadius: 2, background: theme.border, margin: '0 auto 16px' }} />
-            <h3 style={{ color: theme.text, margin: '0 0 4px', fontSize: 17, fontWeight: 800 }}>Sifariş məlumatları</h3>
-            <p style={{ color: theme.sub, fontSize: 12, margin: '0 0 16px' }}>Masa {tableNumber} · ₼{cartTotal.toFixed(2)}</p>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'flex-end', zIndex: 300 }}>
+          <div style={{ background: theme.bg === '#0B1020' ? '#131B30' : theme.card, padding: 24, borderRadius: '22px 22px 0 0', width: '100%', boxSizing: 'border-box', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div style={{ width: 40, height: 4, borderRadius: 2, background: theme.border, margin: '0 auto 20px' }} />
+            <div style={{ color: theme.text, fontSize: 18, fontWeight: 800, marginBottom: 4 }}>Sifariş məlumatları</div>
+            <div style={{ color: theme.sub, fontSize: 13, marginBottom: 18 }}>Masa {tableNum} · ₼{cartTotal.toFixed(2)}</div>
 
-            {loyaltyInfo && (
-              <div style={{ background: theme.accent + '22', border: `1px solid ${theme.accent}44`, borderRadius: 10, padding: 10, marginBottom: 14 }}>
-                <div style={{ color: theme.accent, fontSize: 12, fontWeight: 700 }}>🎁 Loyallıq üzvü: {loyaltyInfo.full_name} · {loyaltyInfo.total_visits} ziyarət</div>
+            {orderErr && (
+              <div style={{ color: '#FF5A5F', fontSize: 13, marginBottom: 12, padding: '10px 14px', background: 'rgba(255,90,95,.1)', borderRadius: 10 }}>
+                {orderErr}
               </div>
             )}
 
-            {error && <div style={{ color: '#FF5A5F', fontSize: 12, marginBottom: 10, padding: '8px 12px', background: 'rgba(255,90,95,.1)', borderRadius: 8 }}>{error}</div>}
-
-            <div style={{ marginBottom: 14, background: theme.border + '44', borderRadius: 10, padding: 10 }}>
+            {/* Səbət xülasəsi */}
+            <div style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 12, padding: 14, marginBottom: 16 }}>
               {cart.map(i => (
-                <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: theme.sub, marginBottom: 4 }}>
+                <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', color: theme.sub, fontSize: 13, marginBottom: 5 }}>
                   <span>{i.name} × {i.qty}</span>
-                  <span style={{ color: theme.text }}>₼{(i.price * i.qty).toFixed(2)}</span>
+                  <span style={{ color: theme.text, fontWeight: 600 }}>₼{(i.price * i.qty).toFixed(2)}</span>
                 </div>
               ))}
-              <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 6, marginTop: 6, display: 'flex', justifyContent: 'space-between', color: theme.text, fontWeight: 700 }}>
+              <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 8, marginTop: 8, display: 'flex', justifyContent: 'space-between', fontWeight: 800, color: theme.accent, fontSize: 15 }}>
                 <span>Cəmi</span><span>₼{cartTotal.toFixed(2)}</span>
               </div>
             </div>
 
-            <input value={customer.name} onChange={e => setCustomer(p => ({ ...p, name: e.target.value }))}
-              placeholder="Ad Soyad *"
-              style={{ width: '100%', padding: 12, borderRadius: 10, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, marginBottom: 10, boxSizing: 'border-box', fontSize: 14 }} />
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="Ad Soyad *"
+              style={{ width: '100%', padding: 14, borderRadius: 12, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, marginBottom: 10, boxSizing: 'border-box', fontSize: 15 }} />
 
-            <input value={customer.phone}
-              onChange={e => { setCustomer(p => ({ ...p, phone: e.target.value })); checkLoyalty(e.target.value) }}
-              placeholder="Telefon (+994...) *"
-              style={{ width: '100%', padding: 12, borderRadius: 10, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, marginBottom: 10, boxSizing: 'border-box', fontSize: 14 }} />
+            <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="Telefon (+994...) *"
+              style={{ width: '100%', padding: 14, borderRadius: 12, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, marginBottom: 10, boxSizing: 'border-box', fontSize: 15 }} />
 
-            <textarea value={note} onChange={e => setNote(e.target.value)}
+            <textarea value={noteText} onChange={e => setNoteText(e.target.value)}
               placeholder="Qeyd (allergiya, xüsusi istək...)" rows={2}
-              style={{ width: '100%', padding: 12, borderRadius: 10, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, marginBottom: 16, boxSizing: 'border-box', resize: 'none', fontSize: 14 }} />
+              style={{ width: '100%', padding: 14, borderRadius: 12, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, marginBottom: 18, boxSizing: 'border-box', resize: 'none', fontSize: 15 }} />
 
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 10 }}>
               <button onClick={submitOrder} disabled={submitting}
-                style={{ flex: 2, padding: 14, borderRadius: 12, border: 'none', background: theme.accent, color: '#001018', fontWeight: 800, fontSize: 14, cursor: submitting ? 'not-allowed' : 'pointer', opacity: submitting ? 0.7 : 1 }}>
-                {submitting ? 'Göndərilir...' : '✅ Sifarişi Təsdiqlə'}
+                style={{ flex: 2, padding: 16, borderRadius: 14, border: 'none', background: theme.accent, color: '#001018', fontWeight: 800, fontSize: 15, cursor: submitting ? 'not-allowed' : 'pointer', opacity: submitting ? 0.7 : 1 }}>
+                {submitting ? 'Göndərilir...' : '✅ Sifarişi Göndər'}
               </button>
-              <button onClick={() => { setStep('menu'); setError('') }}
-                style={{ flex: 1, padding: 14, borderRadius: 12, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.sub, cursor: 'pointer', fontSize: 14 }}>
+              <button onClick={() => { setStep('menu'); setOrderErr('') }}
+                style={{ flex: 1, padding: 16, borderRadius: 14, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.sub, cursor: 'pointer', fontSize: 15 }}>
                 Geri
               </button>
             </div>
