@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from './supabaseClient'
 
@@ -39,6 +39,8 @@ export default function MenuPage() {
   const [tableNum, setTableNum] = useState(urlTable || '')
   const [tableId, setTableId] = useState(null)
   const [sessionTok, setSessionTok] = useState(null)
+  const tableIdRef = useRef(null)
+  const sessionTokRef = useRef(null)
   const [tableReady, setTableReady] = useState(false)
   const [tableErr, setTableErr] = useState('')
   const [tableLoading, setTableLoading] = useState(false)
@@ -104,11 +106,11 @@ export default function MenuPage() {
       .from('table_sessions').select('session_token')
       .eq('table_id', tId).eq('is_active', true)
       .gt('expires_at', new Date().toISOString()).limit(1)
-    if (sess?.[0]) { setSessionTok(sess[0].session_token); return }
+    if (sess?.[0]) { setSessionTok(sess[0].session_token); sessionTokRef.current = sess[0].session_token; return }
     const { data: ns } = await supabase.from('table_sessions')
       .insert({ business_id: b.id, table_id: tId })
       .select('session_token').single()
-    if (ns) setSessionTok(ns.session_token)
+    if (ns) { setSessionTok(ns.session_token); sessionTokRef.current = ns.session_token }
   }
 
   const setupTable = async (num, bizObj) => {
@@ -177,7 +179,7 @@ export default function MenuPage() {
 
     const tId = found.id
 
-    setTableId(tId)
+    setTableId(tId); tableIdRef.current = tId
 
     // Sessiya yarat/tap
     const { data: sess } = await supabase.from('table_sessions')
@@ -189,7 +191,7 @@ export default function MenuPage() {
     } else {
       const { data: ns } = await supabase.from('table_sessions')
         .insert({ business_id: b.id, table_id: tId }).select('session_token').single()
-      if (ns) setSessionTok(ns.session_token)
+      if (ns) { setSessionTok(ns.session_token); sessionTokRef.current = ns.session_token }
     }
 
     setTableReady(true)
@@ -222,7 +224,9 @@ export default function MenuPage() {
     if (!name.trim()) { setOrderErr('Adınızı yazın'); return }
     if (!phone.trim()) { setOrderErr('Telefon nömrənizi yazın'); return }
     if (!cart.length) { setOrderErr('Səbət boşdur'); return }
-    if (!tableId || !sessionTok) { setOrderErr('Masa seçilməyib.'); return }
+    const tId = tableIdRef.current || tableId
+    const sTok = sessionTokRef.current || sessionTok
+    if (!tId || !sTok) { setOrderErr('Masa tapılmadı. Səhifəni yeniləyin.'); return }
     setSubmitting(true); setOrderErr('')
 
     // Rate limit
@@ -232,8 +236,8 @@ export default function MenuPage() {
     const { data: newOrder, error: insErr } = await supabase.from('pending_orders').insert({
       business_id: biz.id,
       branch_id: branchId || null,
-      table_id: tableId,
-      session_token: sessionTok,
+      table_id: tId,
+      session_token: sTok,
       customer_token: cTok,
       customer_name: name.trim(),
       customer_phone: phone.trim(),
