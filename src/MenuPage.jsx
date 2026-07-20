@@ -99,6 +99,18 @@ export default function MenuPage() {
     return () => supabase.removeChannel(ch)
   }, [biz])
 
+  const createSession = async (tId, b) => {
+    const { data: sess } = await supabase
+      .from('table_sessions').select('session_token')
+      .eq('table_id', tId).eq('is_active', true)
+      .gt('expires_at', new Date().toISOString()).limit(1)
+    if (sess?.[0]) { setSessionTok(sess[0].session_token); return }
+    const { data: ns } = await supabase.from('table_sessions')
+      .insert({ business_id: b.id, table_id: tId })
+      .select('session_token').single()
+    if (ns) setSessionTok(ns.session_token)
+  }
+
   const setupTable = async (num, bizObj) => {
     const b = bizObj || biz
     if (!b?.id || !num) {
@@ -107,31 +119,57 @@ export default function MenuPage() {
     }
     setTableLoading(true); setTableErr('')
 
-    // Biznesin bütün masalarını yüklə, sonra nömrəyə görə tap
+    // Bütün masaları yüklə — heç bir filtr olmadan, yalnız business_id
     const { data: allTables } = await supabase
       .from('tables')
       .select('id, number, branch_id')
       .eq('business_id', b.id)
+      .order('number')
 
     if (!allTables || allTables.length === 0) {
-      setTableErr('Bu biznesin masaları tapılmadı.')
+      // Slug ilə birbaşa join yoxla
+      const { data: joinedTable } = await supabase
+        .from('tables')
+        .select('id, number, businesses!inner(slug)')
+        .eq('businesses.slug', slug)
+        .limit(20)
+
+      if (joinedTable && joinedTable.length > 0) {
+        const n2 = String(num).trim()
+        const f2 = joinedTable.find(t =>
+          String(t.number).trim() === n2 ||
+          String(t.number).trim() === n2.padStart(2,'0') ||
+          String(t.number).trim() === String(parseInt(n2))
+        )
+        if (f2) {
+          setTableId(f2.id)
+          await createSession(f2.id, b)
+          setTableReady(true)
+          setTableLoading(false)
+          return true
+        }
+        const nums2 = joinedTable.map(t=>t.number).join(', ')
+        setTableErr(`Masa "${num}" tapılmadı. Mövcud masalar: ${nums2}`)
+        setTableLoading(false)
+        return false
+      }
+
+      setTableErr(`Masa tapılmadı. Əvvəlcə DigiMenu app-dan masalar yaradın (Profil → Biznes Profili → Masa sayı).`)
       setTableLoading(false)
       return false
     }
 
-    // Nömrəni müxtəlif formatlarda yoxla
     const n = String(num).trim()
-    const variants = [n, n.padStart(2, '0'), String(parseInt(n) || 0)]
+    const variants = [n, n.padStart(2,'0'), String(parseInt(n)||0), String(parseInt(n))]
 
     let found = null
     for (const v of variants) {
-      found = allTables.find(t => t.number === v)
+      found = allTables.find(t => String(t.number).trim() === v)
       if (found) break
     }
 
-    // Tapılmadısa bütün masaları göstər
     if (!found) {
-      const nums = allTables.map(t => t.number).join(', ')
+      const nums = [...new Set(allTables.map(t=>t.number))].sort().join(', ')
       setTableErr(`Masa "${num}" tapılmadı. Mövcud masalar: ${nums}`)
       setTableLoading(false)
       return false
