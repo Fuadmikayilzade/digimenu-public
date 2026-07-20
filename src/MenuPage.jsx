@@ -220,18 +220,47 @@ export default function MenuPage() {
   const cartTotal = cart.reduce((s, i) => s + i.price * i.qty, 0)
   const cartCount = cart.reduce((s, i) => s + i.qty, 0)
 
-  const submitOrder = async () => {
+    const submitOrder = async () => {
     if (!name.trim()) { setOrderErr('Adınızı yazın'); return }
     if (!phone.trim()) { setOrderErr('Telefon nömrənizi yazın'); return }
     if (!cart.length) { setOrderErr('Səbət boşdur'); return }
-    const tId = tableIdRef.current || tableId
-    const sTok = sessionTokRef.current || sessionTok
-    if (!tId || !sTok) { setOrderErr('Masa tapılmadı. Səhifəni yeniləyin.'); return }
+    if (!biz?.id || !tableNum) { setOrderErr('Masa seçilməyib.'); return }
     setSubmitting(true); setOrderErr('')
 
-    // Rate limit
-    const { data: ok } = await supabase.rpc('check_order_rate_limit', { p_session_token: sessionTok })
-    if (ok === false) { setOrderErr('Çox tez-tez sifariş verdiniz. Bir az gözləyin.'); setSubmitting(false); return }
+    // Masanı birbaşa Supabase-dən al (state probleminə görə)
+    const n = String(tableNum).trim()
+    const { data: allT } = await supabase
+      .from('tables').select('id').eq('business_id', biz.id)
+    
+    let foundTable = null
+    for (const v of [n, n.padStart(2,'0'), String(parseInt(n))]) {
+      foundTable = (allT || []).find(t => String(t.number).trim() === v)
+      if (foundTable) break
+    }
+    if (!foundTable) {
+      setOrderErr(`Masa ${n} tapılmadı. QR-u yenidən skan edin.`)
+      setSubmitting(false); return
+    }
+    const tId = foundTable.id
+
+    // Sessiyanı tap və ya yarat
+    let sTok = null
+    const { data: existSess } = await supabase
+      .from('table_sessions').select('session_token')
+      .eq('table_id', tId).eq('is_active', true)
+      .gt('expires_at', new Date().toISOString()).limit(1)
+    
+    if (existSess?.[0]) {
+      sTok = existSess[0].session_token
+    } else {
+      const { data: newSess } = await supabase
+        .from('table_sessions')
+        .insert({ business_id: biz.id, table_id: tId })
+        .select('session_token').single()
+      sTok = newSess?.session_token
+    }
+
+    if (!sTok) { setOrderErr('Sessiya yaradıla bilmədi. Yenidən cəhd edin.'); setSubmitting(false); return }
 
     const { data: newOrder, error: insErr } = await supabase.from('pending_orders').insert({
       business_id: biz.id,
@@ -252,7 +281,7 @@ export default function MenuPage() {
 
     await supabase.from('table_sessions')
       .update({ last_order_at: new Date().toISOString() })
-      .eq('session_token', sessionTok)
+      .eq('session_token', sTok)
 
     setMyOrders(p => [newOrder, ...p])
     setCart([])
