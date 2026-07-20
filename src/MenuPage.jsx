@@ -230,7 +230,7 @@ export default function MenuPage() {
     // Masanı birbaşa Supabase-dən al (state probleminə görə)
     const n = String(tableNum).trim()
     const { data: allT } = await supabase
-      .from('tables').select('id').eq('business_id', biz.id)
+      .from('tables').select('id, number').eq('business_id', biz.id)
     
     let foundTable = null
     for (const v of [n, n.padStart(2,'0'), String(parseInt(n))]) {
