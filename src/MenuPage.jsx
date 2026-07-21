@@ -258,7 +258,7 @@ export default function MenuPage() {
           </div>
 
           {/* Ödəniş düyməsi — sifariş qəbul edilən kimi */}
-          {hasActive && (
+          {hasActive && bSettings?.customer_payment_enabled && (
             <a href={`/pay/${slug}?table=${tableNum}`}
               style={{ display: 'block', padding: 16, borderRadius: 14, background: 'linear-gradient(135deg,#00E6A8,#2C5BE0)', color: '#001018', fontWeight: 800, fontSize: 16, textAlign: 'center', textDecoration: 'none', marginBottom: 16 }}>
               💳 Online Ödəniş et
@@ -385,11 +385,6 @@ export default function MenuPage() {
 
       {/* Məhsullar */}
       <div style={{ padding: '0 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {!orderingEnabled && (
-          <div style={{ padding: '10px 14px', borderRadius: 10, background: theme.card, border: `1px solid ${theme.border}`, color: theme.sub, fontSize: 13, textAlign: 'center' }}>
-            ℹ️ Bu restoran hazırda online sifariş qəbul etmir.
-          </div>
-        )}
         {(activeCatData?.products || []).map(p => {
           const inCart = cart.find(i => i.id === p.id)
           return (

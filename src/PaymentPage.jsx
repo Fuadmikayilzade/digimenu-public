@@ -122,6 +122,33 @@ export default function PaymentPage() {
           await supabase.from('pending_orders')
             .update({ payment_status: 'paid' })
             .in('id', orders.map(o => o.id))
+
+          // Masanı boş et — ödəniş tamamlandı
+          if (tableParam && biz?.id) {
+            const { data: allT } = await supabase
+              .from('tables').select('id, number').eq('business_id', biz.id)
+            const n = String(tableParam).trim()
+            const found = (allT || []).find(t =>
+              String(t.number).trim() === n ||
+              String(t.number).trim() === n.padStart(2,'0')
+            )
+            if (found) {
+              // Gələcək rezerv var mı yoxla
+              const todayStr = new Date().toISOString().slice(0,10)
+              const nowTime = new Date().toTimeString().slice(0,5)
+              const { data: futureRes } = await supabase
+                .from('reservations').select('id, reserved_date, reserved_time')
+                .eq('business_id', biz.id).gte('reserved_date', todayStr)
+              const hasRes = (futureRes||[]).some(r => {
+                if (r.reserved_date > todayStr) return true
+                if (!r.reserved_time) return true
+                return r.reserved_time >= nowTime
+              })
+              await supabase.from('tables')
+                .update({ status: hasRes ? 'rezerv' : 'boş' })
+                .eq('id', found.id)
+            }
+          }
         }
 
         setResult(res)
