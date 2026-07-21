@@ -11,8 +11,26 @@ function getCustomerToken() {
 
 const T = { bg:'#0B1020', card:'rgba(255,255,255,0.06)', border:'rgba(255,255,255,0.12)', text:'#FFFFFF', sub:'#9AA4BC', accent:'#00E6A8', blue:'#2C5BE0' }
 
-async function clearTableStatus(tableId, bizId) {
-  if (!tableId || !bizId) return
+async function clearTableStatus(tableId, bizId, tableNum) {
+  if (!bizId) return
+
+  let tId = tableId
+
+  // tableId yoxdursa tableNum ilə tap
+  if (!tId && tableNum) {
+    const { data: allT } = await supabase
+      .from('tables').select('id, number').eq('business_id', bizId)
+    const n = String(tableNum).trim()
+    const found = (allT || []).find(t =>
+      String(t.number).trim() === n ||
+      String(t.number).trim() === n.padStart(2, '0') ||
+      String(t.number).trim() === String(parseInt(n))
+    )
+    tId = found?.id
+  }
+
+  if (!tId) { console.warn('clearTableStatus: table not found', { tableId, tableNum, bizId }); return }
+
   const todayStr = new Date().toISOString().slice(0, 10)
   const nowTime = new Date().toTimeString().slice(0, 5)
   const { data: futureRes } = await supabase
@@ -23,9 +41,10 @@ async function clearTableStatus(tableId, bizId) {
     if (!r.reserved_time) return true
     return r.reserved_time >= nowTime
   })
-  await supabase.from('tables')
-    .update({ status: hasRes ? 'rezerv' : 'boş' })
-    .eq('id', tableId)
+  const newStatus = hasRes ? 'rezerv' : 'boş'
+  const { error } = await supabase.from('tables')
+    .update({ status: newStatus }).eq('id', tId)
+  console.log('Table cleared:', tId, newStatus, error)
 }
 
 export default function PaymentPage() {
@@ -128,7 +147,7 @@ export default function PaymentPage() {
             .in('id', orders.map(o => o.id))
 
           // Masanı boşalt
-          if (tableId) await clearTableStatus(tableId, biz.id)
+          await clearTableStatus(tableId, biz.id, tableParam)
 
         } else {
           // Split — hər sifariş üçün ödənilmiş məhsulları yenilə
@@ -158,7 +177,7 @@ export default function PaymentPage() {
             return orderKeys.every(k => paidForOrder.includes(k))
           })
 
-          if (allOrdersPaid && tableId) await clearTableStatus(tableId, biz.id)
+          if (allOrdersPaid) await clearTableStatus(tableId, biz.id, tableParam)
         }
 
         setResult(res)
