@@ -294,12 +294,25 @@ export default function MenuPage() {
                   </div>
                 )}
 
-                {(ord.items || []).map((it, i) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', color: theme.sub, fontSize: 13, marginBottom: 3 }}>
-                    <span>{it.name} × {it.qty}</span>
-                    <span>₼{(it.price * it.qty).toFixed(2)}</span>
-                  </div>
-                ))}
+                {(ord.items || []).map((it, ii) => {
+                  const paidKeys = Array.isArray(ord.paid_item_keys) ? ord.paid_item_keys : []
+                  const paidCount = Array.from({length: it.qty}, (_, qi) =>
+                    paidKeys.includes(`${ord.id}_${ii}_${qi}`)
+                  ).filter(Boolean).length
+                  const unpaidCount = it.qty - paidCount
+                  if (unpaidCount === 0) return (
+                    <div key={ii} style={{ display:'flex', justifyContent:'space-between', color:'#00E6A8', fontSize:12, marginBottom:3, opacity:0.6 }}>
+                      <span>✅ {it.name} × {it.qty}</span>
+                      <span>ödənilib</span>
+                    </div>
+                  )
+                  return (
+                    <div key={ii} style={{ display:'flex', justifyContent:'space-between', color:theme.sub, fontSize:13, marginBottom:3 }}>
+                      <span>{it.name} × {unpaidCount}{paidCount>0?` (+${paidCount} ödənilib)`:''}</span>
+                      <span>₼{(it.price * unpaidCount).toFixed(2)}</span>
+                    </div>
+                  )
+                })}
                 <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: 8, marginTop: 8, display: 'flex', justifyContent: 'space-between', color: theme.accent, fontWeight: 800 }}>
                   <span>Cəmi</span><span>₼{Number(ord.total).toFixed(2)}</span>
                 </div>
