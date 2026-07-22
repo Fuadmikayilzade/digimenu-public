@@ -46,7 +46,6 @@ export default function MenuPage() {
   const [step, setStep] = useState('menu')
   const [cart, setCart] = useState([])
   const [name, setName] = useState('')
-  const [phone, setPhone] = useState('')
   const [noteText, setNoteText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [orderErr, setOrderErr] = useState('')
@@ -185,7 +184,7 @@ export default function MenuPage() {
 
   const submitOrder = async () => {
     if (!name.trim()) { setOrderErr('Adınızı yazın'); return }
-    if (!phone.trim()) { setOrderErr('Telefon nömrənizi yazın'); return }
+
     if (!cart.length) { setOrderErr('Səbət boşdur'); return }
     if (!biz?.id || !tableNum) { setOrderErr('Masa seçilməyib.'); return }
     setSubmitting(true); setOrderErr('')
@@ -221,7 +220,7 @@ export default function MenuPage() {
       business_id: biz.id, branch_id: branchId || null,
       table_id: found.id, session_token: sTok,
       customer_token: cTok,
-      customer_name: name.trim(), customer_phone: phone.trim(),
+      customer_name: name.trim(),
       items: cart.map(i => ({ id: i.id, name: i.name, price: i.price, qty: i.qty })),
       total: cartTotal, note: noteText.trim() || null,
       order_status: 'pending', status: 'pending',
@@ -451,8 +450,7 @@ export default function MenuPage() {
 
             <input value={name} onChange={e => setName(e.target.value)} placeholder="Ad Soyad *"
               style={{ width: '100%', padding: 14, borderRadius: 12, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, marginBottom: 10, boxSizing: 'border-box', fontSize: 15 }} />
-            <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="Telefon (+994...) *"
-              style={{ width: '100%', padding: 14, borderRadius: 12, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, marginBottom: 10, boxSizing: 'border-box', fontSize: 15 }} />
+
             <textarea value={noteText} onChange={e => setNoteText(e.target.value)} placeholder="Qeyd (allergiya, xüsusi istək...)" rows={2}
               style={{ width: '100%', padding: 14, borderRadius: 12, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.text, marginBottom: 18, boxSizing: 'border-box', resize: 'none', fontSize: 15 }} />
 

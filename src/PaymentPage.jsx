@@ -39,14 +39,15 @@ export default function PaymentPage() {
 
   useEffect(() => { init() }, [slug])
 
+  const [resolvedTableParam, setResolvedTableParam] = useState(tableParam)
+
   const init = async () => {
     setLoading(true)
     const { data: b } = await supabase.from('businesses').select('*').eq('slug', slug).maybeSingle()
     if (!b) { setLoading(false); return }
     setBiz(b)
 
-    // Bütün sifarişləri yüklə (rejected xaric)
-    let q = supabase.from('pending_orders').select('*')
+    let q = supabase.from('pending_orders').select('*, tables(number)')
       .eq('business_id', b.id)
       .neq('order_status', 'rejected')
     if (sessionParam) q = q.eq('session_token', sessionParam)
@@ -54,6 +55,13 @@ export default function PaymentPage() {
 
     const { data: ords } = await q.order('created_at')
     setOrders(ords || [])
+
+    // tableParam URL-də yoxdursa orders-dən götür
+    if (!tableParam && ords?.length) {
+      const tNum = ords.find(o => o.tables?.number)?.tables?.number
+      if (tNum) setResolvedTableParam(String(tNum))
+    }
+
     setLoading(false)
   }
 
@@ -64,8 +72,8 @@ export default function PaymentPage() {
       orderId: o.id,
       tableId: o.table_id,
       ii,
-      key: `${o.id}__${ii}`,
-      paid: Array.isArray(o.paid_item_keys) && o.paid_item_keys.includes(`${o.id}__${ii}`),
+      key: `${o.id}_${ii}`,
+      paid: Array.isArray(o.paid_item_keys) && o.paid_item_keys.includes(`${o.id}_${ii}`),
     }))
   )
 
@@ -77,9 +85,10 @@ export default function PaymentPage() {
   const payAmount = payMode === 'full' ? remaining : splitAmt
 
   // Masanı boşalt — ən sadə yol: birbaşa masa nömrəsinə görə
-  const clearTable = async (bizId) => {
-    if (!tableParam || !bizId) { setDbg('tableParam yoxdur!'); return }
-    const n = String(tableParam).trim()
+  const clearTable = async (bizId, tParam) => {
+    const tp = tParam || resolvedTableParam
+    if (!tp || !bizId) { setDbg(`tableParam yoxdur! tParam=${tParam}, resolved=${resolvedTableParam}`); return }
+    const n = String(tp).trim()
     setDbg(`Masa axtarılır: ${n} / biz: ${bizId}`)
 
     const { data: allT, error: tErr } = await supabase
@@ -145,7 +154,7 @@ export default function PaymentPage() {
       for (const order of orders) {
         const orderKeys = (order.items || []).map((_, ii) => `${order.id}__${ii}`)
         const existingPaid = Array.isArray(order.paid_item_keys) ? order.paid_item_keys : []
-        const newPaidKeys = [...new Set([...existingPaid, ...paidKeys.filter(k => k.startsWith(order.id))])]
+        const newPaidKeys = [...new Set([...existingPaid, ...paidKeys.filter(k => k.startsWith(`${order.id}_`))])]
         const allPaid = orderKeys.every(k => newPaidKeys.includes(k))
 
         await supabase.from('pending_orders').update({
@@ -158,7 +167,7 @@ export default function PaymentPage() {
       const allPaidNow = allItems.every(i =>
         i.paid || paidKeys.includes(i.key)
       )
-      if (allPaidNow) await clearTable(biz.id)
+      if (allPaidNow) await clearTable(biz.id, resolvedTableParam)
 
       setResult(res)
       setStep('done')
