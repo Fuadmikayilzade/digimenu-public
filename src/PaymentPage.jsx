@@ -102,6 +102,12 @@ export default function PaymentPage() {
 
     const { error } = await supabase.from('tables').update({ status: hasRes ? 'rezerv' : 'boş' }).eq('id', found.id)
     setDbg(error ? `Xəta: ${error.message}` : `✅ Masa ${found.number} → ${hasRes ? 'rezerv' : 'boş'}`)
+
+    // ⚠️ VACİB: `active_orders` sətrini (son toxunan işçinin adını
+    // saxlayan) də təmizləyirik — əks halda masa "boş" olsa belə,
+    // App/POS-da köhnə işçinin adı görünməyə davam edir:
+    await supabase.from('active_orders').delete()
+      .eq('business_id', biz.id).eq('table_number', String(found.number))
   }
 
   const handlePay = async (method) => {
