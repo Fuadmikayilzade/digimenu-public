@@ -50,47 +50,57 @@ export default function MenuPage() {
   const [submitting, setSubmitting] = useState(false)
   const [orderErr, setOrderErr] = useState('')
   const [myOrders, setMyOrders] = useState([])
+  // ⚠️ Masanın ORTAQ sessiya token-i — eyni masa QR-ini oxuyan bütün
+  // qonaqlar (fərqli telefonlar) eyni token-i bölüşür. "Sifarişlərim"
+  // bundan sonra BUNA görə filtrlənir (customer_token-ə görə YOX),
+  // beləliklə həmin masada oturan hər kəs BİR qonaq kimi eyni sifariş
+  // siyahısını görür və işlədə bilir:
+  const [sessionToken, setSessionToken] = useState(sessionStorage.getItem('dg_session_tok') || null)
 
   const cTok = getCustomerToken()
   const pollRef = useRef(null)
 
   useEffect(() => { init() }, [slug])
 
-  // Realtime + polling
+  // Realtime + polling — MASANIN ORTAQ sessiyasına görə (sessionToken),
+  // customer_token-ə görə YOX. Bu, "başqa qonaq həmin masadan sifariş
+  // əlavə edəndə mövcud sifarişlərdə görünsün" tələbinin əsl həllidir.
   useEffect(() => {
     if (!biz?.id) return
 
-    // Hər 4 saniyədə sifarişləri yenilə (Realtime olmadan da işləyir)
-    pollRef.current = setInterval(async () => {
-      const { data } = await supabase
-        .from('pending_orders')
-        .select('*')
-        .eq('business_id', biz.id)
-        .eq('customer_token', cTok)
-        .order('created_at', { ascending: false })
+    const fetchMyOrders = async () => {
+      let q = supabase.from('pending_orders').select('*').eq('business_id', biz.id).order('created_at', { ascending: false })
+      q = sessionToken ? q.eq('session_token', sessionToken) : q.eq('customer_token', cTok)
+      const { data } = await q
       if (data) setMyOrders(data)
-    }, 4000)
+    }
 
-    // Realtime (əgər aktiv edilibsə bonus kimi)
+    // Hər 4 saniyədə sifarişləri yenilə (Realtime olmadan da işləyir)
+    pollRef.current = setInterval(fetchMyOrders, 4000)
+
+    // Realtime — '*' (INSERT/UPDATE/DELETE) dinlənilir ki, BAŞQA
+    // qonağın əlavə etdiyi YENİ sifariş də dərhal görünsün (əvvəllər
+    // yalnız UPDATE dinlənilirdi, yeni sifariş yalnız 4s pollda gəlirdi):
+    const filterStr = sessionToken ? `session_token=eq.${sessionToken}` : `customer_token=eq.${cTok}`
     const ch = supabase
-      .channel(`menu_orders_${cTok}`)
-      .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'pending_orders',
-        filter: `customer_token=eq.${cTok}`,
-      }, payload => {
-        setMyOrders(prev =>
-          prev.map(o => o.id === payload.new.id ? { ...o, ...payload.new } : o)
-        )
-      })
+      .channel(`menu_orders_${sessionToken || cTok}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'pending_orders', filter: filterStr },
+        payload => {
+          if (payload.eventType === 'INSERT') {
+            setMyOrders(prev => prev.some(o => o.id === payload.new.id) ? prev : [payload.new, ...prev])
+          } else if (payload.eventType === 'UPDATE') {
+            setMyOrders(prev => prev.map(o => o.id === payload.new.id ? { ...o, ...payload.new } : o))
+          } else if (payload.eventType === 'DELETE') {
+            setMyOrders(prev => prev.filter(o => o.id !== payload.old.id))
+          }
+        })
       .subscribe()
 
     return () => {
       clearInterval(pollRef.current)
       supabase.removeChannel(ch)
     }
-  }, [biz])
+  }, [biz, sessionToken]) // eslint-disable-line
 
   const init = async () => {
     const { data: b } = await supabase
@@ -98,21 +108,29 @@ export default function MenuPage() {
     if (!b) { setNotFound(true); setLoading(false); return }
     setBiz(b)
 
-    const [{ data: s }, { data: cData }, { data: orders }] = await Promise.all([
+    const [{ data: s }, { data: cData }] = await Promise.all([
       supabase.from('business_settings').select('*').eq('business_id', b.id).maybeSingle(),
       branchId
         ? supabase.from('categories').select('*, products(*)').eq('business_id', b.id).eq('branch_id', branchId).order('sort_order')
         : supabase.from('categories').select('*, products(*)').eq('business_id', b.id).is('branch_id', null).order('sort_order'),
-      supabase.from('pending_orders').select('*').eq('business_id', b.id).eq('customer_token', cTok).order('created_at', { ascending: false }),
     ])
 
     setBSettings(s)
     const visible = (cData || []).map(c => ({ ...c, products: (c.products || []).filter(p => p.is_active) })).filter(c => c.products.length > 0)
     setCats(visible)
     if (visible.length) setActiveCat(visible[0].id)
-    setMyOrders(orders || [])
 
+    // ⚠️ Masa varsa ƏVVƏLCƏ sessiyanı qururuq (ortaq token bunun
+    // daxilində müəyyənləşir) — SONRA sifarişləri həmin ortaq token
+    // ilə yükləyirik. Əks halda ilk render YALNIZ bu cihazın
+    // customer_token-i ilə (adətən boş) göstərilirdi.
     if (urlTable) await setupTable(urlTable, b)
+
+    const activeTok = sessionStorage.getItem('dg_session_tok')
+    let oq = supabase.from('pending_orders').select('*').eq('business_id', b.id).order('created_at', { ascending: false })
+    oq = activeTok ? oq.eq('session_token', activeTok) : oq.eq('customer_token', cTok)
+    const { data: orders } = await oq
+    setMyOrders(orders || [])
     setLoading(false)
   }
 
@@ -157,6 +175,7 @@ export default function MenuPage() {
     if (sTok) {
       sessionStorage.setItem('dg_table_id', found.id)
       sessionStorage.setItem('dg_session_tok', sTok)
+      setSessionToken(sTok) // ⚠️ ortaq token state-ə yazılır — poll/realtime bundan asılıdır
     }
     setTableReady(true)
     setTableLoading(false)
@@ -215,6 +234,8 @@ export default function MenuPage() {
       }
     }
     if (!sTok) { setOrderErr('Sessiya yaradıla bilmədi.'); setSubmitting(false); return }
+    sessionStorage.setItem('dg_session_tok', sTok)
+    setSessionToken(sTok)
 
     const { data: newOrder, error: insErr } = await supabase.from('pending_orders').insert({
       business_id: biz.id, branch_id: branchId || null,
@@ -330,8 +351,9 @@ export default function MenuPage() {
               ← Menyuya qayıt
             </button>
             <button onClick={async () => {
-              const { data } = await supabase.from('pending_orders').select('*')
-                .eq('business_id', biz.id).eq('customer_token', cTok).order('created_at', { ascending: false })
+              let q = supabase.from('pending_orders').select('*').eq('business_id', biz.id).order('created_at', { ascending: false })
+              q = sessionToken ? q.eq('session_token', sessionToken) : q.eq('customer_token', cTok)
+              const { data } = await q
               if (data) setMyOrders(data)
             }}
               style={{ padding: '14px 20px', borderRadius: 12, border: `1px solid ${theme.border}`, background: 'transparent', color: theme.sub, cursor: 'pointer', fontSize: 14 }}>
