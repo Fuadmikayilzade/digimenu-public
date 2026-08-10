@@ -239,12 +239,16 @@ export default function MenuPage() {
   const orderingEnabled = bSettings?.customer_ordering_enabled !== false
   const activeStages = bSettings?.status_stages || ['accepted','preparing','ready','delivered']
 
+  // ⚠️ Tam ödənilmiş sifarişlər artıq "Sifarişlərim"də görünmür —
+  // müştəri üçün iş bitmişdir, kart lazımsız yerdə qalmasın:
+  const visibleMyOrders = myOrders.filter(o => o.payment_status !== 'paid')
+
   if (loading) return <Ctr bg="#0B1020">Yüklənir...</Ctr>
   if (notFound) return <Ctr bg="#0B1020">Menyu tapılmadı.</Ctr>
 
   // ── STATUS İZLƏMƏ ────────────────────────────────────────────────
   if (step === 'tracking') {
-    const hasActive = myOrders.some(o => ['accepted','preparing','ready','delivered'].includes(o.order_status))
+    const hasActive = visibleMyOrders.some(o => ['accepted','preparing','ready','delivered'].includes(o.order_status))
     return (
       <div style={{ minHeight: '100vh', background: theme.bg, fontFamily: 'system-ui,sans-serif', padding: '40px 20px' }}>
         <div style={{ maxWidth: 480, margin: '0 auto' }}>
@@ -264,9 +268,9 @@ export default function MenuPage() {
             </a>
           )}
 
-          {myOrders.length === 0 ? (
+          {visibleMyOrders.length === 0 ? (
             <div style={{ color: theme.sub, textAlign: 'center', padding: 20 }}>Sifariş tapılmadı.</div>
-          ) : myOrders.map(ord => {
+          ) : visibleMyOrders.map(ord => {
             const st = STATUS_INFO[ord.order_status] || STATUS_INFO.pending
             const idx = activeStages.indexOf(ord.order_status)
             return (
@@ -373,13 +377,13 @@ export default function MenuPage() {
       )}
 
       {/* Sifarişlərim düyməsi */}
-      {myOrders.length > 0 && (
+      {visibleMyOrders.length > 0 && (
         <div style={{ padding: '12px 20px 0' }}>
           <button onClick={() => setStep('tracking')}
             style={{ width: '100%', padding: '12px 16px', borderRadius: 12, border: `1px solid ${theme.border}`, background: theme.card, color: theme.text, fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>📋 Sifarişlərim ({myOrders.length})</span>
-            <span style={{ color: STATUS_INFO[myOrders[0]?.order_status]?.color || theme.sub }}>
-              {STATUS_INFO[myOrders[0]?.order_status]?.icon} {STATUS_INFO[myOrders[0]?.order_status]?.label}
+            <span>📋 Sifarişlərim ({visibleMyOrders.length})</span>
+            <span style={{ color: STATUS_INFO[visibleMyOrders[0]?.order_status]?.color || theme.sub }}>
+              {STATUS_INFO[visibleMyOrders[0]?.order_status]?.icon} {STATUS_INFO[visibleMyOrders[0]?.order_status]?.label}
             </span>
           </button>
         </div>

@@ -31,6 +31,7 @@ export default function PaymentPage() {
   const [step, setStep] = useState('choose')
   const [result, setResult] = useState(null)
   const [dbg, setDbg] = useState('')
+  const [bSettings, setBSettings] = useState(null)
 
   const cTok = getCustomerToken()
 
@@ -42,11 +43,26 @@ export default function PaymentPage() {
     if (!b) { setLoading(false); return }
     setBiz(b)
 
-    const { data: ords } = await supabase
-      .from('pending_orders').select('*, tables(number)')
+    const { data: settings } = await supabase.from('business_settings')
+      .select('split_payment_enabled').eq('business_id', b.id).order('updated_at', { ascending: false }).limit(1)
+    setBSettings(settings?.[0] || { split_payment_enabled: true })
+
+    // ⚠️ MASANIN ÖZÜNƏ görə tapılır — YALNIZ bu cihazın customer_token-i
+    // ilə DEYİL. Səbəb: eyni masada oturan qonaqlar fərqli telefonlardan
+    // fərqli sessiyalarla sifariş edir, amma HAMISI eyni ORTAQ hesabı
+    // görüb öz paylarını ödəməlidir — əks halda bir qonağın ödədiyi
+    // məhsulu başqa qonaq bir də ödəyə bilərdi (təkrar ödəniş riski).
+    let tableRowId = null
+    if (urlTableParam) {
+      const { data: tRow } = await supabase.from('tables').select('id')
+        .eq('business_id', b.id).eq('number', String(urlTableParam)).maybeSingle()
+      tableRowId = tRow?.id || null
+    }
+
+    let q = supabase.from('pending_orders').select('*, tables(number)')
       .eq('business_id', b.id).neq('order_status', 'rejected')
-      .eq('customer_token', getCustomerToken())
-      .order('created_at')
+    q = tableRowId ? q.eq('table_id', tableRowId) : q.eq('customer_token', getCustomerToken())
+    const { data: ords } = await q.order('created_at')
 
     setOrders(ords || [])
 
@@ -58,6 +74,24 @@ export default function PaymentPage() {
 
     setLoading(false)
   }
+
+  // Canlı yenilənmə — masanın istənilən qonağı ödəniş edəndə (fərqli
+  // cihazdan belə olsa) BÜTÜN digər qonaqların ekranı DƏRHAL yenilənsin
+  // (ödənilmiş məhsul hamı üçün eyni anda "bağlanır"):
+  useEffect(() => {
+    if (!biz?.id) return
+    const ch = supabase.channel(`payment_page_${biz.id}_${urlTableParam || tableNum}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'pending_orders', filter: `business_id=eq.${biz.id}` },
+        (payload) => {
+          setOrders(prev => {
+            const exists = prev.some(o => o.id === payload.new.id)
+            if (!exists) return prev // başqa masanın sifarişidir
+            return prev.map(o => o.id === payload.new.id ? { ...o, ...payload.new } : o)
+          })
+        })
+      .subscribe()
+    return () => { supabase.removeChannel(ch) }
+  }, [biz?.id]) // eslint-disable-line
 
   // Hər item×qty-i ayrıca entry kimi göstər (2x Pizza → Pizza + Pizza)
   const expandedItems = orders.flatMap(o =>
@@ -198,7 +232,12 @@ export default function PaymentPage() {
 
           {step==='choose' && (<>
             <div style={{display:'flex',gap:10,marginBottom:16}}>
-              {[{k:'full',icon:'💰',label:'Hamısını ödə',desc:`₼${remaining.toFixed(2)}`},{k:'split',icon:'✂️',label:'Öz payımı seç',desc:'Məhsul seçin'}].map(o=>(
+              {[
+                {k:'full',icon:'💰',label:'Hamısını ödə',desc:`₼${remaining.toFixed(2)}`},
+                ...(bSettings?.split_payment_enabled !== false
+                  ? [{k:'split',icon:'✂️',label:'Öz payımı seç',desc:'Məhsul seçin'}]
+                  : []),
+              ].map(o=>(
                 <button key={o.k} onClick={()=>setPayMode(o.k)}
                   style={{flex:1,padding:16,borderRadius:14,border:`2px solid ${payMode===o.k?T.accent:T.border}`,background:payMode===o.k?T.accent+'15':T.card,cursor:'pointer',textAlign:'center'}}>
                   <div style={{fontSize:22,marginBottom:4}}>{o.icon}</div>
