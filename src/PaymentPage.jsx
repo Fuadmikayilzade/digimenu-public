@@ -54,16 +54,18 @@ export default function PaymentPage() {
     // məhsulu başqa qonaq bir də ödəyə bilərdi (təkrar ödəniş riski).
     let tableRowId = null
     if (urlTableParam) {
-      const { data: tRow } = await supabase.from('tables').select('id')
+      const { data: tRow, error: tErr } = await supabase.from('tables').select('id')
         .eq('business_id', b.id).eq('number', String(urlTableParam)).maybeSingle()
       tableRowId = tRow?.id || null
+      if (!tableRowId) setDbg(`⚠️ Masa "${urlTableParam}" tapılmadı${tErr ? ' — ' + tErr.message : ''}`)
     }
 
     let q = supabase.from('pending_orders').select('*, tables(number)')
       .eq('business_id', b.id).neq('order_status', 'rejected')
     q = tableRowId ? q.eq('table_id', tableRowId) : q.eq('customer_token', getCustomerToken())
-    const { data: ords } = await q.order('created_at')
+    const { data: ords, error: ordsErr } = await q.order('created_at')
 
+    if (ordsErr) setDbg(`⚠️ Sifarişlər oxuna bilmədi: ${ordsErr.message}`)
     setOrders(ords || [])
 
     // Masa nömrəsini tap
@@ -224,9 +226,15 @@ export default function PaymentPage() {
           <div style={{color:T.text,fontSize:20,fontWeight:800,marginTop:10}}>{biz.name}</div>
           <div style={{color:T.sub,fontSize:13,marginTop:4}}>{tableNum && `Masa ${tableNum} · `}{GATEWAY_LABEL[GATEWAY]}</div>
           {paidAmt > 0 && <div style={{color:T.accent,fontSize:12,marginTop:6}}>✅ Ödənilib: ₼{paidAmt.toFixed(2)}</div>}
+          {dbg && <div style={{color:'#FF9F5A',fontSize:11,marginTop:6}}>{dbg}</div>}
         </div>
 
-        {unpaid.length===0 ? (
+        {orders.length===0 ? (
+          <div style={{...cBox,textAlign:'center',color:'#FF9F5A',padding:32,fontSize:14}}>
+            ⚠️ Bu masa üçün sifariş tapılmadı.<br/>
+            <span style={{fontSize:12,color:T.sub}}>Masa nömrəsini yoxlayın və ya əvvəlcə menyudan sifariş verin.</span>
+          </div>
+        ) : unpaid.length===0 ? (
           <div style={{...cBox,textAlign:'center',color:T.accent,padding:32,fontSize:16,fontWeight:700}}>✅ Bütün sifarişlər ödənilib!</div>
         ) : (<>
 
