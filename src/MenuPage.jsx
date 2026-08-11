@@ -56,21 +56,32 @@ export default function MenuPage() {
   // beləliklə həmin masada oturan hər kəs BİR qonaq kimi eyni sifariş
   // siyahısını görür və işlədə bilir:
   const [sessionToken, setSessionToken] = useState(sessionStorage.getItem('dg_session_tok') || null)
+  // ⚠️ ƏLAVƆ: `tableId` — POS-da kassirin əlavə etdiyi "güzgü" sifarişində
+  // `session_token` HEÇ VAXT olmur (o, sırf masaya bağlıdır, müştəri
+  // sessiyasına bağlı deyil). Yalnız session_token-ə görə filtrləsək,
+  // kassirin sifarişi "Sifarişlərim"də HEÇ VAXT görünməzdi. Ona görə
+  // ƏSAS filtr indi `table_id`-dir (PaymentPage.jsx-də olduğu kimi) —
+  // bu, HANSI mənbədən gəldiyinə (müştəri özü / kassir) baxmadan
+  // masanın bütün sifarişlərini göstərir:
+  const [tableId, setTableId] = useState(sessionStorage.getItem('dg_table_id') || null)
 
   const cTok = getCustomerToken()
   const pollRef = useRef(null)
 
   useEffect(() => { init() }, [slug])
 
-  // Realtime + polling — MASANIN ORTAQ sessiyasına görə (sessionToken),
-  // customer_token-ə görə YOX. Bu, "başqa qonaq həmin masadan sifariş
-  // əlavə edəndə mövcud sifarişlərdə görünsün" tələbinin əsl həllidir.
+  // Realtime + polling — ƏSAS filtr `table_id`-dir (masanın BÜTÜN
+  // sifarişləri — müştəri özü göndərsin, kassir POS-dan "güzgüləsin",
+  // fərq etmir). session_token yalnız table_id hələ məlum olmayanda
+  // (məs. masa seçilməmişdən əvvəl) ehtiyat filtrdir:
   useEffect(() => {
     if (!biz?.id) return
 
     const fetchMyOrders = async () => {
       let q = supabase.from('pending_orders').select('*').eq('business_id', biz.id).order('created_at', { ascending: false })
-      q = sessionToken ? q.eq('session_token', sessionToken) : q.eq('customer_token', cTok)
+      if (tableId) q = q.eq('table_id', tableId)
+      else if (sessionToken) q = q.eq('session_token', sessionToken)
+      else q = q.eq('customer_token', cTok)
       const { data } = await q
       if (data) setMyOrders(data)
     }
@@ -79,11 +90,11 @@ export default function MenuPage() {
     pollRef.current = setInterval(fetchMyOrders, 4000)
 
     // Realtime — '*' (INSERT/UPDATE/DELETE) dinlənilir ki, BAŞQA
-    // qonağın əlavə etdiyi YENİ sifariş də dərhal görünsün (əvvəllər
-    // yalnız UPDATE dinlənilirdi, yeni sifariş yalnız 4s pollda gəlirdi):
-    const filterStr = sessionToken ? `session_token=eq.${sessionToken}` : `customer_token=eq.${cTok}`
+    // qonağın (və ya kassirin POS-dan) əlavə etdiyi YENİ sifariş də
+    // dərhal görünsün:
+    const filterStr = tableId ? `table_id=eq.${tableId}` : sessionToken ? `session_token=eq.${sessionToken}` : `customer_token=eq.${cTok}`
     const ch = supabase
-      .channel(`menu_orders_${sessionToken || cTok}`)
+      .channel(`menu_orders_${tableId || sessionToken || cTok}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'pending_orders', filter: filterStr },
         payload => {
           if (payload.eventType === 'INSERT') {
@@ -100,7 +111,7 @@ export default function MenuPage() {
       clearInterval(pollRef.current)
       supabase.removeChannel(ch)
     }
-  }, [biz, sessionToken]) // eslint-disable-line
+  }, [biz, sessionToken, tableId]) // eslint-disable-line
 
   const init = async () => {
     const { data: b } = await supabase
@@ -126,9 +137,12 @@ export default function MenuPage() {
     // customer_token-i ilə (adətən boş) göstərilirdi.
     if (urlTable) await setupTable(urlTable, b)
 
+    const activeTableId = sessionStorage.getItem('dg_table_id')
     const activeTok = sessionStorage.getItem('dg_session_tok')
     let oq = supabase.from('pending_orders').select('*').eq('business_id', b.id).order('created_at', { ascending: false })
-    oq = activeTok ? oq.eq('session_token', activeTok) : oq.eq('customer_token', cTok)
+    if (activeTableId) oq = oq.eq('table_id', activeTableId)
+    else if (activeTok) oq = oq.eq('session_token', activeTok)
+    else oq = oq.eq('customer_token', cTok)
     const { data: orders } = await oq
     setMyOrders(orders || [])
     setLoading(false)
@@ -172,8 +186,13 @@ export default function MenuPage() {
       sTok = ns?.session_token
     }
 
+    // ⚠️ `tableId` HƆMİŞƆ təyin olunur (sTok uğursuz olsa belə) —
+    // "Sifarişlərim"in masaya görə filtrlənməsi bundan asılıdır, table_sessions-un
+    // uğurlu olub-olmamasından ASILI DEYİL:
+    sessionStorage.setItem('dg_table_id', found.id)
+    setTableId(found.id)
+
     if (sTok) {
-      sessionStorage.setItem('dg_table_id', found.id)
       sessionStorage.setItem('dg_session_tok', sTok)
       setSessionToken(sTok) // ⚠️ ortaq token state-ə yazılır — poll/realtime bundan asılıdır
     }
@@ -352,7 +371,7 @@ export default function MenuPage() {
             </button>
             <button onClick={async () => {
               let q = supabase.from('pending_orders').select('*').eq('business_id', biz.id).order('created_at', { ascending: false })
-              q = sessionToken ? q.eq('session_token', sessionToken) : q.eq('customer_token', cTok)
+              q = tableId ? q.eq('table_id', tableId) : sessionToken ? q.eq('session_token', sessionToken) : q.eq('customer_token', cTok)
               const { data } = await q
               if (data) setMyOrders(data)
             }}
