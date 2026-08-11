@@ -15,6 +15,7 @@ export default function PaymentPage() {
   const { slug } = useParams()
   const [sp] = useSearchParams()
   const urlTableParam = sp.get('table')
+  const urlBranchParam = sp.get('branch') || null
 
   const [biz, setBiz] = useState(null)
   const [orders, setOrders] = useState([])
@@ -54,9 +55,17 @@ export default function PaymentPage() {
     // məhsulu başqa qonaq bir də ödəyə bilərdi (təkrar ödəniş riski).
     let tableRowId = null
     if (urlTableParam) {
-      const { data: tRow, error: tErr } = await supabase.from('tables').select('id')
-        .eq('business_id', b.id).eq('number', String(urlTableParam)).maybeSingle()
-      tableRowId = tRow?.id || null
+      // ⚠️ VACİB: sadəcə nömrəyə görə axtarmaq kifayət deyil — əgər bu
+      // biznesdə eyni nömrəli masa BİRDƆN ÇOX filialda mövcuddursa
+      // (məs. köhnə/filial-öncəsi data), `.maybeSingle()` "multiple
+      // rows returned" xətası ilə ÇÖKÜR. Filial parametri ilə
+      // dəqiqləşdiririk, üstəlik `.limit(1)` ilə ehtiyat tədbiri görürük
+      // ki, hələ də təkrarlanma olsa belə səhifə çökməsin:
+      let tq = supabase.from('tables').select('id')
+        .eq('business_id', b.id).eq('number', String(urlTableParam))
+      tq = urlBranchParam ? tq.eq('branch_id', urlBranchParam) : tq.is('branch_id', null)
+      const { data: tRows, error: tErr } = await tq.limit(1)
+      tableRowId = tRows?.[0]?.id || null
       if (!tableRowId) setDbg(`⚠️ Masa "${urlTableParam}" tapılmadı${tErr ? ' — ' + tErr.message : ''}`)
     }
 

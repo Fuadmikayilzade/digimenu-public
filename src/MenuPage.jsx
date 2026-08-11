@@ -154,12 +154,17 @@ export default function MenuPage() {
     setTableLoading(true); setTableErr('')
 
     const { data: allT } = await supabase
-      .from('tables').select('id, number').eq('business_id', b.id)
+      .from('tables').select('id, number, branch_id').eq('business_id', b.id)
 
     const n = String(num).trim()
     let found = null
+    // ⚠️ Əgər eyni nömrəli masa BİRDƆN ÇOX filialda mövcuddursa (köhnə
+    // data), əvvəlcə DƆQİQ filial uyğunluğunu axtarırıq — yalnız
+    // tapılmasa, hər hansı uyğun gələnə güzəşt edirik:
     for (const v of [n, n.padStart(2, '0'), String(parseInt(n) || 0)]) {
-      found = (allT || []).find(t => String(t.number).trim() === v)
+      const candidates = (allT || []).filter(t => String(t.number).trim() === v)
+      if (!candidates.length) continue
+      found = candidates.find(t => (t.branch_id || null) === (branchId || null)) || candidates[0]
       if (found) break
     }
 
@@ -227,12 +232,15 @@ export default function MenuPage() {
     if (!biz?.id || !tableNum) { setOrderErr('Masa seçilməyib.'); return }
     setSubmitting(true); setOrderErr('')
 
-    // Masanı Supabase-dən al
-    const { data: allT } = await supabase.from('tables').select('id, number').eq('business_id', biz.id)
+    // Masanı Supabase-dən al (filial nəzərə alınaraq — eyni nömrəli
+    // masa fərqli filiallarda ola bilər):
+    const { data: allT } = await supabase.from('tables').select('id, number, branch_id').eq('business_id', biz.id)
     const n = String(tableNum).trim()
     let found = null
     for (const v of [n, n.padStart(2,'0'), String(parseInt(n)||0)]) {
-      found = (allT||[]).find(t => String(t.number).trim() === v)
+      const candidates = (allT||[]).filter(t => String(t.number).trim() === v)
+      if (!candidates.length) continue
+      found = candidates.find(t => (t.branch_id || null) === (branchId || null)) || candidates[0]
       if (found) break
     }
     if (!found) { setOrderErr(`Masa ${n} tapılmadı.`); setSubmitting(false); return }
