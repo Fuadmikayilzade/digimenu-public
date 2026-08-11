@@ -78,7 +78,7 @@ export default function MenuPage() {
     if (!biz?.id) return
 
     const fetchMyOrders = async () => {
-      let q = supabase.from('pending_orders').select('*').eq('business_id', biz.id).order('created_at', { ascending: false })
+      let q = supabase.from('pending_orders').select('*').eq('business_id', biz.id).neq('order_status', 'rejected').order('created_at', { ascending: false })
       if (tableId) q = q.eq('table_id', tableId)
       else if (sessionToken) q = q.eq('session_token', sessionToken)
       else q = q.eq('customer_token', cTok)
@@ -139,7 +139,7 @@ export default function MenuPage() {
 
     const activeTableId = sessionStorage.getItem('dg_table_id')
     const activeTok = sessionStorage.getItem('dg_session_tok')
-    let oq = supabase.from('pending_orders').select('*').eq('business_id', b.id).order('created_at', { ascending: false })
+    let oq = supabase.from('pending_orders').select('*').eq('business_id', b.id).neq('order_status', 'rejected').order('created_at', { ascending: false })
     if (activeTableId) oq = oq.eq('table_id', activeTableId)
     else if (activeTok) oq = oq.eq('session_token', activeTok)
     else oq = oq.eq('customer_token', cTok)
@@ -378,7 +378,7 @@ export default function MenuPage() {
               ← Menyuya qayıt
             </button>
             <button onClick={async () => {
-              let q = supabase.from('pending_orders').select('*').eq('business_id', biz.id).order('created_at', { ascending: false })
+              let q = supabase.from('pending_orders').select('*').eq('business_id', biz.id).neq('order_status', 'rejected').order('created_at', { ascending: false })
               q = tableId ? q.eq('table_id', tableId) : sessionToken ? q.eq('session_token', sessionToken) : q.eq('customer_token', cTok)
               const { data } = await q
               if (data) setMyOrders(data)
