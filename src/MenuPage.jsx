@@ -38,6 +38,9 @@ export default function MenuPage() {
 
   // Masa
   const [tableNum, setTableNum] = useState(urlTable || '')
+  // "Görünən ad" — müştəriyə göstərilən (məs. "1"), `tableNum`-dan
+  // (daxili, unikal, QR/link-lərdə istifadə olunan) AYRIDIR:
+  const [tableLabel, setTableLabel] = useState(urlTable || '')
   const [tableReady, setTableReady] = useState(false)
   const [tableLoading, setTableLoading] = useState(false)
   const [tableErr, setTableErr] = useState('')
@@ -82,7 +85,8 @@ export default function MenuPage() {
       if (tableId) q = q.eq('table_id', tableId)
       else if (sessionToken) q = q.eq('session_token', sessionToken)
       else q = q.eq('customer_token', cTok)
-      const { data } = await q
+      const { data, error } = await q
+      if (error) console.error('Sifarişlər oxunmadı:', error.message)
       if (data) setMyOrders(data)
     }
 
@@ -143,7 +147,8 @@ export default function MenuPage() {
     if (activeTableId) oq = oq.eq('table_id', activeTableId)
     else if (activeTok) oq = oq.eq('session_token', activeTok)
     else oq = oq.eq('customer_token', cTok)
-    const { data: orders } = await oq
+    const { data: orders, error: ordersErr } = await oq
+    if (ordersErr) console.error('İlkin sifarişlər oxunmadı:', ordersErr.message)
     setMyOrders(orders || [])
     setLoading(false)
   }
@@ -154,15 +159,17 @@ export default function MenuPage() {
     setTableLoading(true); setTableErr('')
 
     const { data: allT } = await supabase
-      .from('tables').select('id, number, branch_id').eq('business_id', b.id)
+      .from('tables').select('id, number, branch_id, display_label').eq('business_id', b.id)
 
     const n = String(num).trim()
     let found = null
     // ⚠️ Əgər eyni nömrəli masa BİRDƆN ÇOX filialda mövcuddursa (köhnə
     // data), əvvəlcə DƆQİQ filial uyğunluğunu axtarırıq — yalnız
-    // tapılmasa, hər hansı uyğun gələnə güzəşt edirik:
+    // tapılmasa, hər hansı uyğun gələnə güzəşt edirik. Həm daxili
+    // `number`, HƆM DƆ "görünən ad" (`display_label`) üzrə axtarırıq —
+    // müştəri əl ilə "1" yazsa, bu, filialın öz görünən adı ola bilər:
     for (const v of [n, n.padStart(2, '0'), String(parseInt(n) || 0)]) {
-      const candidates = (allT || []).filter(t => String(t.number).trim() === v)
+      const candidates = (allT || []).filter(t => String(t.number).trim() === v || String(t.display_label || '').trim() === v)
       if (!candidates.length) continue
       found = candidates.find(t => (t.branch_id || null) === (branchId || null)) || candidates[0]
       if (found) break
@@ -196,6 +203,7 @@ export default function MenuPage() {
     // uğurlu olub-olmamasından ASILI DEYİL:
     sessionStorage.setItem('dg_table_id', found.id)
     setTableId(found.id)
+    setTableLabel(found.display_label || found.number)
 
     if (sTok) {
       sessionStorage.setItem('dg_session_tok', sTok)
@@ -233,12 +241,13 @@ export default function MenuPage() {
     setSubmitting(true); setOrderErr('')
 
     // Masanı Supabase-dən al (filial nəzərə alınaraq — eyni nömrəli
-    // masa fərqli filiallarda ola bilər):
-    const { data: allT } = await supabase.from('tables').select('id, number, branch_id').eq('business_id', biz.id)
+    // masa fərqli filiallarda ola bilər; həm daxili nömrə, HƆM DƆ
+    // "görünən ad" üzrə axtarılır):
+    const { data: allT } = await supabase.from('tables').select('id, number, branch_id, display_label').eq('business_id', biz.id)
     const n = String(tableNum).trim()
     let found = null
     for (const v of [n, n.padStart(2,'0'), String(parseInt(n)||0)]) {
-      const candidates = (allT||[]).filter(t => String(t.number).trim() === v)
+      const candidates = (allT||[]).filter(t => String(t.number).trim() === v || String(t.display_label || '').trim() === v)
       if (!candidates.length) continue
       found = candidates.find(t => (t.branch_id || null) === (branchId || null)) || candidates[0]
       if (found) break
@@ -304,7 +313,7 @@ export default function MenuPage() {
             <div style={{ fontSize: 48 }}>🧾</div>
             <div style={{ color: theme.text, fontSize: 20, fontWeight: 800, marginTop: 10 }}>Sifarişlərim</div>
             <div style={{ color: theme.sub, fontSize: 13, marginTop: 4 }}>
-              Masa {tableNum} · Avtomatik yenilənir
+              Masa {tableLabel} · Avtomatik yenilənir
             </div>
           </div>
 
@@ -403,7 +412,7 @@ export default function MenuPage() {
         {biz.logo_url && <img src={biz.logo_url} alt="" style={{ width: 56, height: 56, borderRadius: 14, objectFit: 'cover', marginBottom: 12, border: '2px solid rgba(255,255,255,0.3)' }} />}
         <div style={{ color: '#fff', fontSize: 24, fontWeight: 800 }}>{biz.name}</div>
         <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13, marginTop: 4 }}>Rəqəmsal menyu</div>
-        {tableReady && <div style={{ marginTop: 8, display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: 999, padding: '4px 12px', fontSize: 12, fontWeight: 700, color: '#fff' }}>🪑 Masa {tableNum}</div>}
+        {tableReady && <div style={{ marginTop: 8, display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: 999, padding: '4px 12px', fontSize: 12, fontWeight: 700, color: '#fff' }}>🪑 Masa {tableLabel}</div>}
       </div>
 
       {/* Masa seçimi */}
@@ -497,7 +506,7 @@ export default function MenuPage() {
           <div style={{ background: theme.bg === '#0B1020' ? '#131B30' : theme.card, padding: 24, borderRadius: '22px 22px 0 0', width: '100%', boxSizing: 'border-box', maxHeight: '90vh', overflowY: 'auto' }}>
             <div style={{ width: 40, height: 4, borderRadius: 2, background: theme.border, margin: '0 auto 20px' }} />
             <div style={{ color: theme.text, fontSize: 18, fontWeight: 800, marginBottom: 4 }}>Sifariş məlumatları</div>
-            <div style={{ color: theme.sub, fontSize: 13, marginBottom: 18 }}>Masa {tableNum} · ₼{cartTotal.toFixed(2)}</div>
+            <div style={{ color: theme.sub, fontSize: 13, marginBottom: 18 }}>Masa {tableLabel} · ₼{cartTotal.toFixed(2)}</div>
 
             {orderErr && <div style={{ color: '#FF5A5F', fontSize: 13, marginBottom: 12, padding: '10px 14px', background: 'rgba(255,90,95,.1)', borderRadius: 10 }}>{orderErr}</div>}
 
