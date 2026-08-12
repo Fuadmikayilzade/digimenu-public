@@ -319,7 +319,7 @@ export default function MenuPage() {
 
           {/* Ödəniş düyməsi — sifariş qəbul edilən kimi */}
           {hasActive && bSettings?.customer_payment_enabled && (
-            <a href={`/pay/${slug}?table=${tableNum}`}
+            <a href={`/pay/${slug}?table=${tableNum}${branchId ? `&branch=${branchId}` : ''}`}
               style={{ display: 'block', padding: 16, borderRadius: 14, background: 'linear-gradient(135deg,#00E6A8,#2C5BE0)', color: '#001018', fontWeight: 800, fontSize: 16, textAlign: 'center', textDecoration: 'none', marginBottom: 16 }}>
               💳 Online Ödəniş et
             </a>
