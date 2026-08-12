@@ -20,6 +20,7 @@ export default function PaymentPage() {
   const [biz, setBiz] = useState(null)
   const [orders, setOrders] = useState([])
   const [tableNum, setTableNum] = useState(urlTableParam || '')
+  const [tableLabel, setTableLabel] = useState(urlTableParam || '')
   const [loading, setLoading] = useState(true)
   const [payMode, setPayMode] = useState('full')
   const [payMethod, setPayMethod] = useState(null)
@@ -61,15 +62,16 @@ export default function PaymentPage() {
       // rows returned" xətası ilə ÇÖKÜR. Filial parametri ilə
       // dəqiqləşdiririk, üstəlik `.limit(1)` ilə ehtiyat tədbiri görürük
       // ki, hələ də təkrarlanma olsa belə səhifə çökməsin:
-      let tq = supabase.from('tables').select('id')
+      let tq = supabase.from('tables').select('id, display_label, number')
         .eq('business_id', b.id).eq('number', String(urlTableParam))
       tq = urlBranchParam ? tq.eq('branch_id', urlBranchParam) : tq.is('branch_id', null)
       const { data: tRows, error: tErr } = await tq.limit(1)
       tableRowId = tRows?.[0]?.id || null
       if (!tableRowId) setDbg(`⚠️ Masa "${urlTableParam}" tapılmadı${tErr ? ' — ' + tErr.message : ''}`)
+      else setTableLabel(tRows[0].display_label || tRows[0].number)
     }
 
-    let q = supabase.from('pending_orders').select('*, tables(number)')
+    let q = supabase.from('pending_orders').select('*, tables(number, display_label)')
       .eq('business_id', b.id).neq('order_status', 'rejected')
     q = tableRowId ? q.eq('table_id', tableRowId) : q.eq('customer_token', getCustomerToken())
     const { data: ords, error: ordsErr } = await q.order('created_at')
@@ -79,8 +81,11 @@ export default function PaymentPage() {
 
     // Masa nömrəsini tap
     if (!urlTableParam) {
-      const tNum = (ords || []).find(o => o.tables?.number)?.tables?.number
-      if (tNum) setTableNum(String(tNum))
+      const foundOrd = (ords || []).find(o => o.tables?.number)
+      if (foundOrd) {
+        setTableNum(String(foundOrd.tables.number))
+        setTableLabel(foundOrd.tables.display_label || foundOrd.tables.number)
+      }
     }
 
     setLoading(false)
@@ -132,7 +137,7 @@ export default function PaymentPage() {
     const tn = tableNum || urlTableParam
     if (!tn || !biz?.id) { setDbg(`masa nömrəsi yoxdur: tableNum=${tableNum}`); return }
 
-    const { data: allT } = await supabase.from('tables').select('id, number').eq('business_id', biz.id)
+    const { data: allT } = await supabase.from('tables').select('id, number, display_label').eq('business_id', biz.id)
     const n = String(tn).trim()
     let found = (allT||[]).find(t => String(t.number).trim() === n)
     if (!found) found = (allT||[]).find(t => String(t.number).trim() === n.padStart(2,'0'))
@@ -146,7 +151,7 @@ export default function PaymentPage() {
     const hasRes = (res||[]).some(r => r.reserved_date > todayStr || !r.reserved_time || r.reserved_time >= nowTime)
 
     const { error } = await supabase.from('tables').update({ status: hasRes ? 'rezerv' : 'boş' }).eq('id', found.id)
-    setDbg(error ? `Xəta: ${error.message}` : `✅ Masa ${found.number} → ${hasRes ? 'rezerv' : 'boş'}`)
+    setDbg(error ? `Xəta: ${error.message}` : `✅ Masa ${found.display_label || found.number} → ${hasRes ? 'rezerv' : 'boş'}`)
 
     // ⚠️ VACİB: `active_orders` sətrini (son toxunan işçinin adını
     // saxlayan) də təmizləyirik — əks halda masa "boş" olsa belə,
@@ -158,7 +163,7 @@ export default function PaymentPage() {
   const handlePay = async (method) => {
     setProcessing(true)
     try {
-      const res = await initiatePayment({ amount: payAmount, orderId: orders.map(o=>o.id).join(','), customerName: orders[0]?.customer_name||'', description: `${biz?.name} Masa ${tableNum}`, method })
+      const res = await initiatePayment({ amount: payAmount, orderId: orders.map(o=>o.id).join(','), customerName: orders[0]?.customer_name||'', description: `${biz?.name} Masa ${tableLabel}`, method })
 
       if (!res.success) { setResult({ message: res.message||'Xəta' }); setStep('error'); setProcessing(false); return }
 
@@ -233,7 +238,7 @@ export default function PaymentPage() {
         <div style={{textAlign:'center',marginBottom:24}}>
           <div style={{fontSize:44}}>💳</div>
           <div style={{color:T.text,fontSize:20,fontWeight:800,marginTop:10}}>{biz.name}</div>
-          <div style={{color:T.sub,fontSize:13,marginTop:4}}>{tableNum && `Masa ${tableNum} · `}{GATEWAY_LABEL[GATEWAY]}</div>
+          <div style={{color:T.sub,fontSize:13,marginTop:4}}>{tableNum && `Masa ${tableLabel} · `}{GATEWAY_LABEL[GATEWAY]}</div>
           {paidAmt > 0 && <div style={{color:T.accent,fontSize:12,marginTop:6}}>✅ Ödənilib: ₼{paidAmt.toFixed(2)}</div>}
           {dbg && <div style={{color:'#FF9F5A',fontSize:11,marginTop:6}}>{dbg}</div>}
         </div>
