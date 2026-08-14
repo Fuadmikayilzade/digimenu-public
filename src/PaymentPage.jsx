@@ -45,9 +45,20 @@ export default function PaymentPage() {
     if (!b) { setLoading(false); return }
     setBiz(b)
 
-    const { data: settings } = await supabase.from('business_settings')
-      .select('split_payment_enabled').eq('business_id', b.id).order('updated_at', { ascending: false }).limit(1)
-    setBSettings(settings?.[0] || { split_payment_enabled: true })
+    // ⚠️ Ödəniş icazələri indi FİLİALA görə (branch_payment_settings) —
+    // Əsas filial üçün branch_id IS NULL, digər filiallar üçün konkret
+    // filial ID-si. Uyğun sətir tapılmasa, köhnə defolt (tam=deaktiv,
+    // öz payı=aktiv) istifadə olunur:
+    let psQ = supabase.from('branch_payment_settings')
+      .select('full_payment_enabled, split_payment_enabled').eq('business_id', b.id)
+    psQ = urlBranchParam ? psQ.eq('branch_id', urlBranchParam) : psQ.is('branch_id', null)
+    const { data: psRows } = await psQ.limit(1)
+    const settingsRow = psRows?.[0] || { full_payment_enabled: false, split_payment_enabled: true }
+    setBSettings(settingsRow)
+    // ⚠️ Başlanğıc `payMode` HƆMİŞƆ mövcud (aktiv) bir seçimə uyğun
+    // olmalıdır — əks halda "full" defolt seçilib, amma yalnız "split"
+    // aktivdirsə, heç bir düymə seçili görünməzdi:
+    if (!settingsRow.full_payment_enabled && settingsRow.split_payment_enabled) setPayMode('split')
 
     // ⚠️ MASANIN ÖZÜNƏ görə tapılır — YALNIZ bu cihazın customer_token-i
     // ilə DEYİL. Səbəb: eyni masada oturan qonaqlar fərqli telefonlardan
@@ -250,13 +261,20 @@ export default function PaymentPage() {
           </div>
         ) : unpaid.length===0 ? (
           <div style={{...cBox,textAlign:'center',color:T.accent,padding:32,fontSize:16,fontWeight:700}}>✅ Bütün sifarişlər ödənilib!</div>
+        ) : (!bSettings?.full_payment_enabled && !bSettings?.split_payment_enabled) ? (
+          <div style={{...cBox,textAlign:'center',color:'#FF9F5A',padding:32,fontSize:14}}>
+            ⚠️ Bu filialda onlayn ödəniş hələ aktiv deyil.<br/>
+            <span style={{fontSize:12,color:T.sub}}>Zəhmət olmasa hesabı kassirdən (nağd/kart) ödəyin.</span>
+          </div>
         ) : (<>
 
           {step==='choose' && (<>
             <div style={{display:'flex',gap:10,marginBottom:16}}>
               {[
-                {k:'full',icon:'💰',label:'Hamısını ödə',desc:`₼${remaining.toFixed(2)}`},
-                ...(bSettings?.split_payment_enabled !== false
+                ...(bSettings?.full_payment_enabled
+                  ? [{k:'full',icon:'💰',label:'Hamısını ödə',desc:`₼${remaining.toFixed(2)}`}]
+                  : []),
+                ...(bSettings?.split_payment_enabled
                   ? [{k:'split',icon:'✂️',label:'Öz payımı seç',desc:'Məhsul seçin'}]
                   : []),
               ].map(o=>(
